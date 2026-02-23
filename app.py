@@ -185,7 +185,6 @@ def overlay_boxes(image, boxes):
         cv2.putText(arr, f"{b['conf']:.2f}", (x1, max(20,y1-8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
     return Image.fromarray(arr)
 
-# Custom CSS - premium medical UI
 st.markdown("""
 <style>
     .main {background: linear-gradient(180deg, #0f172a 0%, #1e2937 100%);}
@@ -195,6 +194,7 @@ st.markdown("""
     .badge {padding: 12px 28px; border-radius: 50px; font-size: 1.6rem; font-weight: 700; display: inline-block; margin: 12px 0;}
     .img-container {border: 3px solid #334155; border-radius: 16px; overflow: hidden;}
     .section-header {color: #60a5fa; border-bottom: 2px solid #334155; padding-bottom: 8px;}
+    .severity {font-size: 1.3rem; font-weight: 600;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -255,7 +255,7 @@ if uploaded:
                         st.image(over, caption="YOLO Polyp Detections", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         over.save(tmp.name)
-                        st.download_button("📥 Download Detections", open(tmp.name,"rb"), f"detections_{idx+1}.png", key=f"dl{det}_{idx}")
+                        st.download_button("📥 Download Detections", open(tmp.name,"rb"), f"detections_{idx+1}.png", key=f"download_detections_{idx}")
                     else:
                         st.info("No polyps detected")
                 else:
@@ -263,9 +263,10 @@ if uploaded:
             
             # UC severity
             if pred == 1 and ordinal_model:
-                label, probs = predict_ordinal(ordinal_model, img)
-                st.markdown(f"**Severity (0-3):** `{label}`")
-                st.caption(f"Sigmoid: {np.round(probs,3)}")
+                label, _ = predict_ordinal(ordinal_model, img)
+                severity_text = ["Remission", "Mild", "Moderate", "Severe"][label]
+                severity_color = ["#22c55e", "#eab308", "#f97316", "#ef4444"][label]
+                st.markdown(f'<div class="severity" style="color:{severity_color};">Severity: {severity_text} ({label}/3)</div>', unsafe_allow_html=True)
             
             st.markdown('</div>', unsafe_allow_html=True)
             
@@ -285,7 +286,7 @@ if uploaded:
                         st.image(overlay, caption="Overlay", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         Image.fromarray(overlay).save(tmp.name)
-                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"sc{idx}")
+                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"download_scorecam_{idx}")
                         st.markdown('</div>', unsafe_allow_html=True)
                 except:
                     pass
