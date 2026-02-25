@@ -92,18 +92,18 @@ class ScoreCAM:
     def _hook(self, module, inp, out):
         self.activations = out.detach()
 
-    def get_endoscopy_mask(self, img):
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        _, thresh = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return np.ones_like(gray, dtype=np.float32)
-        largest = max(contours, key=cv2.contourArea)
-        mask = np.zeros_like(gray, dtype=np.uint8)
-        cv2.drawContours(mask, [largest], -1, 255, -1)
+    def get_circular_mask(self, img):
+        h, w = img.shape[:2]
+        center = (w//2, h//2)
+        radius = int(min(w, h) * 0.47)          # perfect for most endoscopy scopes
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.circle(mask, center, radius, 255, -1)
+        # clean any small noise
+        kernel = np.ones((5,5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         return mask.astype(np.float32) / 255.0
 
-    def generate(self, x, class_idx, original_img=None, max_maps=16):
+    def generate(self, x, class_idx, original_img=None, max_maps=12):
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
@@ -132,12 +132,12 @@ class ScoreCAM:
 
         if original_img is not None:
             orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
-            mask = self.get_endoscopy_mask(orig)
+            mask = self.get_circular_mask(orig)
             cam = cam * mask
             if cam.max() > 0:
                 cam = cam / (cam.max() + 1e-8)
 
-        cam = cv2.GaussianBlur(cam, (7, 7), 0)
+        cam = cv2.GaussianBlur(cam, (5,5), 0)   # smooth, no noise
         if cam.max() > 0:
             cam = cam / cam.max()
 
@@ -327,6 +327,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
