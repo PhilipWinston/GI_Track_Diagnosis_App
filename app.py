@@ -90,122 +90,69 @@ class ScoreCAM:
         target_layer.register_forward_hook(self._hook)
 
     def _hook(self, module, inp, out):
-        # store feature activations (C x h x w)
         self.activations = out.detach()
 
-    def _tensor_to_uint8_image(self, x_tensor):
-        """
-        Convert a normalized tensor 1x3xH xW -> HxWx3 uint8 RGB (0..255).
-        Uses IMAGENET_DEFAULT_MEAN / STD (iterable of 3 floats).
-        """
-        arr = x_tensor.detach().cpu().squeeze(0).numpy()  # 3 x H x W
-        mean = np.array(IMAGENET_DEFAULT_MEAN).reshape(3,1,1)
-        std  = np.array(IMAGENET_DEFAULT_STD).reshape(3,1,1)
-        img = (arr * std + mean) * 255.0
-        img = np.clip(img, 0, 255).astype(np.uint8)
-        img = np.transpose(img, (1, 2, 0))  # H x W x 3
-        return img
-
-    def _foreground_mask_from_tensor(self, x_tensor, black_thresh=12):
-        """
-        Return float mask HxW in [0,1], where near-black/padding -> 0.
-        Performs morphological closing to fill small/medium holes (handles center black spots).
-        """
-        img = self._tensor_to_uint8_image(x_tensor)  # H x W x 3 uint8
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-
-        # initial binary mask (foreground = 255)
-        _, mask = cv2.threshold(gray, int(black_thresh), 255, cv2.THRESH_BINARY)
-
-        h, w = mask.shape
-        # choose kernel adaptively (12% of min dim), clamp and make odd
-        k = max(3, int(min(h, w) * 0.12))
-        if k % 2 == 0:
-            k += 1
-        kernel = np.ones((k, k), np.uint8)
-
-        # close then open to fill holes and remove tiny specks
-        try:
-            mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-            mask_open = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, np.ones((3,3), np.uint8), iterations=1)
-        except Exception:
-            # fallback to original mask if morphology fails
-            mask_open = mask
-
-        # blur & normalize to float [0,1]
-        blur_k = k if (k % 2 == 1) else (k+1)
-        mask_blur = cv2.GaussianBlur(mask_open, (blur_k, blur_k), 0)
-        mask_float = (mask_blur.astype(np.float32) / 255.0)
-
-        # safety: if mask is almost empty, return full mask to avoid zeroing cam
-        if mask_float.max() < 0.05:
-            return np.ones_like(mask_float, dtype=np.float32)
-        return mask_float
-
     def generate(self, x, class_idx, max_maps=64):
-        """
-        x: input tensor 1x3xH xW (already preprocessed/resized)
-        returns: cam HxW float in [0,1] or None if cannot compute
-        """
         self.model.eval()
+
+        # Forward pass to collect activations
         with torch.no_grad():
-            # populate activations
-            _ = self.model(x)
+            logits = self.model(x)
 
         if self.activations is None:
             return None
 
-        maps = torch.relu(self.activations[0])  # C x h x w
-        if maps.numel() == 0:
-            return None
+        # Feature maps
+        maps = torch.relu(self.activations[0])  # C x H x W
+        maps_np = maps.cpu().numpy()
 
-        # compute "energy" of maps on CPU for ordering
-        energies = maps.abs().view(maps.shape[0], -1).sum(dim=1).cpu().numpy()
+        # Rank maps by importance (energy)
+        energies = maps_np.reshape(maps_np.shape[0], -1).sum(axis=1)
         order = np.argsort(-energies)
-        used = order[:min(max_maps, maps.shape[0])]
+        used = order[:min(max_maps, len(order))]
 
         cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
 
         for i in used:
-            m = maps[i]
-            m_cpu = m.cpu().numpy()
-            mmin = m_cpu.min()
-            mmax = m_cpu.max()
-            if (mmax - mmin) < 1e-6:
-                continue
-            # normalize map to 0..1
-            m_norm = (m_cpu - mmin) / (mmax - mmin + 1e-8)
-            m_up = cv2.resize(m_norm, (IMG_SIZE, IMG_SIZE))
-            # create masked input: multiply original (unnormalized) spatial map with normalized map
-            m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
-            masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
+            m = maps_np[i]
 
+            m_min, m_max = m.min(), m.max()
+            if (m_max - m_min) < 1e-6:
+                continue
+
+            # Normalize map
+            m = (m - m_min) / (m_max - m_min + 1e-8)
+
+            # Resize to input size
+            m_up = cv2.resize(m, (IMG_SIZE, IMG_SIZE))
+
+            # Create masked input
+            mask_tensor = torch.from_numpy(m_up).float().to(DEVICE)
+            masked = x * mask_tensor.unsqueeze(0).unsqueeze(0)
+
+            # ---- CORRECT SCORE-CAM WEIGHT (RAW LOGIT, NOT SOFTMAX) ----
             with torch.no_grad():
                 out = self.model(masked)
-                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
+                score = out[0, class_idx].item()
+
             cam += score * m_up
 
+        # Normalize CAM
         if cam.max() <= 0:
             return None
 
-        # normalize
+        cam = np.maximum(cam, 0)
         cam = cam / (cam.max() + 1e-8)
 
-        # remove black borders / holes by foreground mask derived from the input tensor
-        try:
-            fg_mask = self._foreground_mask_from_tensor(x)
-            if fg_mask.shape != cam.shape:
-                fg_mask = cv2.resize(fg_mask, (cam.shape[1], cam.shape[0]))
-            cam = cam * fg_mask
-        except Exception:
-            pass
-
-        # small smoothing and final renormalization
+        # Smooth for medical stability
         cam = cv2.GaussianBlur(cam, (7,7), 0)
-        if cam.max() > 0:
-            cam = cam / (cam.max() + 1e-8)
-        return cam
 
+        # Optional sharpening (improves lesion localization)
+        cam = cam ** 1.5
+
+        cam = cam / (cam.max() + 1e-8)
+
+        return cam
 def download_if_missing(file_id: str, out_path: str, desc: str):
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024: return True
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -390,5 +337,6 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
