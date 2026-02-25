@@ -92,18 +92,26 @@ class ScoreCAM:
     def _hook(self, module, inp, out):
         self.activations = out.detach()
 
-    def get_circular_mask(self, img):
+    def get_endoscopy_mask(self, img):
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        gray = cv2.medianBlur(gray, 5)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 50,
+                                   param1=50, param2=30, minRadius=80, maxRadius=120)
         h, w = img.shape[:2]
-        center = (w//2, h//2)
-        radius = int(min(w, h) * 0.47)          # perfect for most endoscopy scopes
         mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.circle(mask, center, radius, 255, -1)
-        # clean any small noise
-        kernel = np.ones((5,5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        if circles is not None:
+            circles = np.round(circles[0, :]).astype("int")
+            center = (circles[0][0], circles[0][1])
+            radius = circles[0][2] - 5
+            cv2.circle(mask, center, radius, 255, -1)
+        else:
+            center = (w//2, h//2)
+            radius = int(min(w, h) * 0.46)
+            cv2.circle(mask, center, radius, 255, -1)
+        mask = cv2.GaussianBlur(mask, (15,15), 0)
         return mask.astype(np.float32) / 255.0
 
-    def generate(self, x, class_idx, original_img=None, max_maps=12):
+    def generate(self, x, class_idx, original_img=None, max_maps=8):
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
@@ -132,16 +140,16 @@ class ScoreCAM:
 
         if original_img is not None:
             orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
-            mask = self.get_circular_mask(orig)
+            mask = self.get_endoscopy_mask(orig)
             cam = cam * mask
             if cam.max() > 0:
                 cam = cam / (cam.max() + 1e-8)
 
-        cam = cv2.GaussianBlur(cam, (5,5), 0)   # smooth, no noise
+        cam = np.clip(cam, 0.3, 1.0)
         if cam.max() > 0:
             cam = cam / cam.max()
-
-        return cam
+        cam = cv2.GaussianBlur(cam, (5,5), 0)
+        return  cam
         
 def download_if_missing(file_id: str, out_path: str, desc: str):
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024: return True
@@ -303,9 +311,9 @@ if uploaded:
             if show_scorecam and classification_model:
                 try:
                     sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])
-                    cam = sc.generate(x, pred)
+                    cam = sc.generate(x, pred, original_img=img)
                     if cam is not None:
-                        heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_JET)
+                        heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_TURBO)
                         heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
                         img_res = np.array(img.resize((IMG_SIZE,IMG_SIZE))).astype("uint8")
                         overlay = (0.6*img_res + 0.4*heat).astype("uint8")
@@ -327,6 +335,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
