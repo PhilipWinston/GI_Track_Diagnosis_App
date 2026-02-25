@@ -92,67 +92,44 @@ class ScoreCAM:
     def _hook(self, module, inp, out):
         self.activations = out.detach()
 
-    def generate(self, x, class_idx, max_maps=64):
+    def generate(self, x, class_idx, original_img=None, max_maps=64):
         self.model.eval()
-
-        # Forward pass to collect activations
         with torch.no_grad():
-            logits = self.model(x)
-
+            _ = self.model(x)
         if self.activations is None:
             return None
 
-        # Feature maps
-        maps = torch.relu(self.activations[0])  # C x H x W
-        maps_np = maps.cpu().numpy()
-
-        # Rank maps by importance (energy)
-        energies = maps_np.reshape(maps_np.shape[0], -1).sum(axis=1)
-        order = np.argsort(-energies)
-        used = order[:min(max_maps, len(order))]
-
+        maps = torch.relu(self.activations[0])
         cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
+        num_maps = min(max_maps, maps.shape[0])
 
-        for i in used:
-            m = maps_np[i]
-
-            m_min, m_max = m.min(), m.max()
-            if (m_max - m_min) < 1e-6:
-                continue
-
-            # Normalize map
-            m = (m - m_min) / (m_max - m_min + 1e-8)
-
-            # Resize to input size
-            m_up = cv2.resize(m, (IMG_SIZE, IMG_SIZE))
-
-            # Create masked input
-            mask_tensor = torch.from_numpy(m_up).float().to(DEVICE)
-            masked = x * mask_tensor.unsqueeze(0).unsqueeze(0)
-
-            # ---- CORRECT SCORE-CAM WEIGHT (RAW LOGIT, NOT SOFTMAX) ----
+        for i in range(num_maps):
+            m = maps[i]
+            mmin, mmax = m.min(), m.max()
+            if (mmax - mmin).abs() < 1e-6: continue
+            m = (m - mmin) / (mmax - mmin + 1e-8)
+            m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
+            m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
+            masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
             with torch.no_grad():
                 out = self.model(masked)
-                score = out[0, class_idx].item()
-
+                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
             cam += score * m_up
 
-        # Normalize CAM
-        if cam.max() <= 0:
-            return None
-
-        cam = np.maximum(cam, 0)
+        if cam.max() <= 0: return None
         cam = cam / (cam.max() + 1e-8)
 
-        # Smooth for medical stability
-        cam = cv2.GaussianBlur(cam, (7,7), 0)
-
-        # Optional sharpening (improves lesion localization)
-        cam = cam ** 1.5
-
-        cam = cam / (cam.max() + 1e-8)
+        # Black corner fix
+        if original_img is not None:
+            orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
+            gray = cv2.cvtColor(orig, cv2.COLOR_RGB2GRAY)
+            _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+            cam = cam * (mask.astype(np.float32) / 255.0)
+            if cam.max() > 0:
+                cam = cam / (cam.max() + 1e-8)
 
         return cam
+        
 def download_if_missing(file_id: str, out_path: str, desc: str):
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024: return True
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -337,6 +314,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
