@@ -92,7 +92,18 @@ class ScoreCAM:
     def _hook(self, module, inp, out):
         self.activations = out.detach()
 
-    def generate(self, x, class_idx, original_img=None, max_maps=64):
+    def get_endoscopy_mask(self, img):
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        _, thresh = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return np.ones_like(gray, dtype=np.float32)
+        largest = max(contours, key=cv2.contourArea)
+        mask = np.zeros_like(gray, dtype=np.uint8)
+        cv2.drawContours(mask, [largest], -1, 255, -1)
+        return mask.astype(np.float32) / 255.0
+
+    def generate(self, x, class_idx, original_img=None, max_maps=16):
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
@@ -119,14 +130,16 @@ class ScoreCAM:
         if cam.max() <= 0: return None
         cam = cam / (cam.max() + 1e-8)
 
-        # Black corner fix
         if original_img is not None:
             orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
-            gray = cv2.cvtColor(orig, cv2.COLOR_RGB2GRAY)
-            _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
-            cam = cam * (mask.astype(np.float32) / 255.0)
+            mask = self.get_endoscopy_mask(orig)
+            cam = cam * mask
             if cam.max() > 0:
                 cam = cam / (cam.max() + 1e-8)
+
+        cam = cv2.GaussianBlur(cam, (7, 7), 0)
+        if cam.max() > 0:
+            cam = cam / cam.max()
 
         return cam
         
@@ -314,6 +327,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
