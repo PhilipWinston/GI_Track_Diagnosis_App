@@ -94,53 +94,51 @@ class ScoreCAM:
 
     def get_endoscopy_mask(self, img):
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (7, 7), 0)
+        gray = cv2.GaussianBlur(gray, (9,9), 0)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
-            h, w = gray.shape
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.circle(mask, (w//2, h//2), int(min(w, h) * 0.47), 255, -1)
-            return mask.astype(np.float32) / 255.0
+            h,w = gray.shape
+            mask = np.zeros((h,w), dtype=np.uint8)
+            cv2.circle(mask, (w//2, h//2), int(min(w,h)*0.44), 255, -1)
+            return mask.astype(np.float32)/255.0
         largest = max(contours, key=cv2.contourArea)
         mask = np.zeros(gray.shape, dtype=np.uint8)
         cv2.drawContours(mask, [largest], -1, 255, -1)
-        mask = cv2.GaussianBlur(mask, (15, 15), 0)
-        return mask.astype(np.float32) / 255.0
+        kernel = np.ones((11,11), np.uint8)
+        mask = cv2.erode(mask, kernel, iterations=2)
+        mask = cv2.GaussianBlur(mask, (21,21), 0)
+        return mask.astype(np.float32)/255.0
 
     def generate(self, x, class_idx, original_img=None, max_maps=8):
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
-        if self.activations is None:
-            return None
+        if self.activations is None: return None
         maps = torch.relu(self.activations[0])
         cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
-        num_maps = min(max_maps, maps.shape[0])
-        for i in range(num_maps):
+        for i in range(min(max_maps, maps.shape[0])):
             m = maps[i]
             mmin, mmax = m.min(), m.max()
-            if (mmax - mmin).abs() < 1e-6: continue
-            m = (m - mmin) / (mmax - mmin + 1e-8)
+            if (mmax-mmin).abs()<1e-6: continue
+            m = (m-mmin)/(mmax-mmin+1e-8)
             m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
             m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
             masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
             with torch.no_grad():
                 out = self.model(masked)
-                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
+                score = float(torch.softmax(out,dim=1)[0,class_idx].item())
             cam += score * m_up
-        if cam.max() <= 0: return None
-        cam = cam / (cam.max() + 1e-8)
+        if cam.max()<=0: return None
+        cam /= (cam.max()+1e-8)
         if original_img is not None:
-            orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
+            orig = np.array(original_img.resize((IMG_SIZE,IMG_SIZE)))
             mask = self.get_endoscopy_mask(orig)
             cam = cam * mask
-            if cam.max() > 0:
-                cam = cam / (cam.max() + 1e-8)
-        cam = np.clip(cam, 0.25, 1.0)
-        if cam.max() > 0:
-            cam = cam / cam.max()
-        cam = cv2.GaussianBlur(cam, (5, 5), 0)
+            if cam.max()>0: cam /= (cam.max()+1e-8)
+        cam = np.clip(cam, 0.4, 1.0)
+        if cam.max()>0: cam /= cam.max()
+        cam = cv2.GaussianBlur(cam, (7,7), 0)
         return cam
         
 def download_if_missing(file_id: str, out_path: str, desc: str):
@@ -327,6 +325,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
