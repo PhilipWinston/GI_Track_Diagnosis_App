@@ -88,31 +88,112 @@ class ScoreCAM:
         self.target_layer = target_layer
         self.activations = None
         target_layer.register_forward_hook(self._hook)
+
     def _hook(self, module, inp, out):
+        # store activations (C x H x W)
         self.activations = out.detach()
+
+    def _tensor_to_uint8_image(self, x_tensor):
+        # x_tensor: 1 x 3 x H x W (normalized)
+        # convert back to H x W x 3 uint8 RGB for mask computation
+        t = x_tensor.detach().cpu().squeeze(0).clone()
+        mean = torch.tensor(IMAGENET_DEFAULT_MEAN).view(3,1,1)
+        std  = torch.tensor(IMAGENET_DEFAULT_STD).view(3,1,1)
+        t = t * std + mean
+        t = (t * 255.0).clamp(0,255).permute(1,2,0).numpy().astype(np.uint8)
+        return t
+
+    def _foreground_mask_from_tensor(self, x_tensor, black_thresh=12):
+        """
+        Return float mask HxW in [0,1], where black/padding is near 0.
+        Uses morphological closing to fill small/medium holes (center black spots).
+        """
+        img = self._tensor_to_uint8_image(x_tensor)  # HxWx3
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+        # initial binary mask: 1 => foreground, 0 => near-black
+        _, mask = cv2.threshold(gray, black_thresh, 255, cv2.THRESH_BINARY)
+
+        # morphological close to fill small/medium dark holes (handles central black spots)
+        h, w = mask.shape
+        # adapt kernel size to image size (not too small, not too large)
+        k = max(3, min(31, int(min(h,w) * 0.12)))
+        kernel = np.ones((k, k), np.uint8)
+        mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        # remove small specks & smooth edges
+        kernel2 = np.ones((3,3), np.uint8)
+        mask_open = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel2, iterations=1)
+
+        # soft blur and normalize to float [0,1]
+        mask_blur = cv2.GaussianBlur(mask_open, (k|1, k|1), 0)
+        mask_float = (mask_blur.astype(np.float32) / 255.0)
+        # ensure we have some foreground; if not, fall back to full mask
+        if mask_float.max() < 0.05:
+            return np.ones((h,w), dtype=np.float32)
+        return mask_float
+
     def generate(self, x, class_idx, max_maps=64):
+        """
+        x: input tensor 1x3xH'xW' (already resized by your transform)
+        returns: cam HxW float in [0,1] or None if cannot compute
+        """
         self.model.eval()
         with torch.no_grad():
+            # run a forward to populate activations
             _ = self.model(x)
+
         if self.activations is None:
             return None
-        maps = torch.relu(self.activations[0])
+
+        maps = torch.relu(self.activations[0])  # C x h x w
         cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
-        num_maps = min(max_maps, maps.shape[0])
-        for i in range(num_maps):
+
+        # prioritize maps by energy for speed / stability
+        energies = maps.view(maps.shape[0], -1).abs().sum(dim=1).cpu().numpy()
+        order = np.argsort(-energies)
+        used = order[:min(max_maps, maps.shape[0])]
+
+        for i in used:
             m = maps[i]
-            mmin, mmax = m.min(), m.max()
-            if (mmax - mmin).abs() < 1e-6: continue
-            m = (m - mmin) / (mmax - mmin + 1e-8)
-            m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
+            mmin = float(m.min().cpu().numpy())
+            mmax = float(m.max().cpu().numpy())
+            if (mmax - mmin) < 1e-6:
+                continue
+            # normalize map and upsample to IMG_SIZE
+            m_norm = (m - mmin) / (mmax - mmin + 1e-8)
+            m_up = cv2.resize(m_norm.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
             m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
             masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
+
             with torch.no_grad():
                 out = self.model(masked)
                 score = float(torch.softmax(out, dim=1)[0, class_idx].item())
+
             cam += score * m_up
-        if cam.max() <= 0: return None
-        return cam / (cam.max() + 1e-8)
+
+        if cam.max() <= 0:
+            return None
+
+        # normalize cam to [0,1]
+        cam = cam / (cam.max() + 1e-8)
+
+        # create a foreground mask from the input tensor to remove black borders / holes
+        try:
+            fg_mask = self._foreground_mask_from_tensor(x)
+            # ensure same shape as cam (IMG_SIZE x IMG_SIZE)
+            if fg_mask.shape != cam.shape:
+                fg_mask = cv2.resize(fg_mask, (IMG_SIZE, IMG_SIZE))
+            cam = cam * fg_mask
+        except Exception:
+            # if anything goes wrong with mask, keep cam as-is
+            pass
+
+        # final smoothing / small center-bias suppression (mild)
+        cam = cv2.GaussianBlur(cam, (7,7), 0)
+        if cam.max() > 0:
+            cam = cam / (cam.max() + 1e-8)
+        return cam
 
 def download_if_missing(file_id: str, out_path: str, desc: str):
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024: return True
@@ -298,3 +379,4 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
