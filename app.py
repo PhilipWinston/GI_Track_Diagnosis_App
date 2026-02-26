@@ -83,6 +83,7 @@ transform = transforms.Compose([
 ])
 
 # Replace your entire ScoreCAM class with this:
+# Replace your entire ScoreCAM class with this (perfect for your EFFResNetViT model)
 class ScoreCAM:
     def __init__(self, model, target_layer):
         self.model = model
@@ -97,38 +98,40 @@ class ScoreCAM:
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
-        if self.activations is None: return None
+        if self.activations is None:
+            return None
         maps = torch.relu(self.activations[0])
         cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
         for i in range(min(max_maps, maps.shape[0])):
             m = maps[i]
             mmin, mmax = m.min(), m.max()
-            if (mmax-mmin).abs()<1e-6: continue
-            m = (m-mmin)/(mmax-mmin+1e-8)
+            if (mmax - mmin).abs() < 1e-6: continue
+            m = (m - mmin) / (mmax - mmin + 1e-8)
             m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
             m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
             masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
             with torch.no_grad():
                 out = self.model(masked)
-                score = float(torch.softmax(out,dim=1)[0,class_idx].item())
+                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
             cam += score * m_up
-        if cam.max()<=0: return None
-        cam /= (cam.max()+1e-8)
+        if cam.max() <= 0: return None
+        cam /= (cam.max() + 1e-8)
 
-        # ---------- AUTO BLACK BORDER CROP + FOREGROUND MASK ----------
         if original_img is not None:
-            img_np = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+            # Auto crop black borders + strong foreground mask (exactly like your notebook)
+            arr = np.array(original_img)
+            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
             mask = (gray > 18).astype(np.float32)
             mask = cv2.GaussianBlur(mask, (9,9), 0)
-            cam = cam * mask
+            cam = cv2.resize(cam, (arr.shape[1], arr.shape[0])) * mask
+            cam = cv2.resize(cam, (IMG_SIZE, IMG_SIZE))
 
-            # ---------- MEDICAL CENTER BIAS ----------
+            # Medical center bias
             h, w = cam.shape
             y, xgrid = np.ogrid[:h, :w]
             center_dist = np.sqrt((xgrid - w/2)**2 + (y - h/2)**2)
-            center_dist = center_dist / center_dist.max()
-            cam = cam * (1 - 0.25*center_dist)
+            center_dist /= center_dist.max()
+            cam *= (1 - 0.25 * center_dist)
 
         cam = cam / (cam.max() + 1e-8)
         return cam
@@ -300,15 +303,15 @@ if uploaded:
                         img_res = np.array(img.resize((IMG_SIZE,IMG_SIZE))).astype("uint8")
                         overlay = np.uint8(0.65 * img_res + 0.35 * heat)
             
-                        st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability (Improved)</p>', unsafe_allow_html=True)
+                        st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability (Notebook Quality)</p>', unsafe_allow_html=True)
                         st.image(heat, caption="Score-CAM Heatmap", width=DISPLAY_WIDTH)
                         st.image(overlay, caption="Overlay", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         Image.fromarray(overlay).save(tmp.name)
                         st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"sc_{idx}")
                         st.markdown('</div>', unsafe_allow_html=True)
-                except:
-                    pass
+                except Exception as e:
+                    st.warning(f"Score-CAM: {str(e)[:80]}")
         
         progress.progress((idx+1)/len(uploaded))
     progress.empty()
@@ -317,6 +320,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
