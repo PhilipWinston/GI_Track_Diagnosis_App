@@ -6,24 +6,52 @@ import streamlit as st
 import torch
 import timm
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import cv2
 from torchvision import transforms
 import torch.nn as nn
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 import gdown
+
 try:
     from ultralytics import YOLO
     HAS_ULTRALYTICS = True
 except:
     HAS_ULTRALYTICS = False
 
-st.set_page_config(page_title="GI Diagnosis Framework", layout="wide", initial_sidebar_state="expanded")
+# ============================================================================
+# PAGE CONFIGURATION
+# ============================================================================
+st.set_page_config(
+    page_title="GI Tract Diagnosis System",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': "Deep Learning Framework for GI Tract Disorder Diagnosis"
+    }
+)
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMG_SIZE = 224
-DISPLAY_WIDTH = 420
+DISPLAY_WIDTH = 500
+
 CLASS_NAMES = ["Normal", "Ulcerative Colitis", "Polyps", "Esophagitis"]
-CLASS_COLORS = ["#22c55e", "#eab308", "#3b82f6", "#a855f7"]
+CLASS_COLORS = {
+    0: "#10b981",  # Green - Normal
+    1: "#f59e0b",  # Amber - UC
+    2: "#3b82f6",  # Blue - Polyps
+    3: "#8b5cf6"   # Purple - Esophagitis
+}
+CLASS_ICONS = {
+    0: "✓",
+    1: "⚠",
+    2: "●",
+    3: "!"
+}
+
 MODEL_DIR = "models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -32,19 +60,220 @@ DRIVE_IDS = {
     "ordinal": "1Hvng1F6upAUjfsZe_sLpTmmH8lia04TI",
     "polyp": "1xzGUJ1d9qDQKiodCzbWVOH07gNsffWnS",
 }
-MODEL_PATHS = {k: os.path.join(MODEL_DIR, f"best_{k}.pth" if k!="polyp" else "best.pt") for k in DRIVE_IDS}
 
+MODEL_PATHS = {
+    k: os.path.join(MODEL_DIR, f"best_{k}.pth" if k != "polyp" else "best.pt")
+    for k in DRIVE_IDS
+}
+
+# ============================================================================
+# CUSTOM CSS
+# ============================================================================
+st.markdown("""
+<style>
+    /* Main styling */
+    .main {
+        padding: 2rem;
+    }
+    
+    /* Header styling */
+    .main-header {
+        text-align: center;
+        padding: 2rem 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 15px;
+        margin-bottom: 2rem;
+        color: white;
+    }
+    
+    .main-header h1 {
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+        color: white !important;
+    }
+    
+    .main-header p {
+        font-size: 1.1rem;
+        opacity: 0.95;
+        margin: 0;
+    }
+    
+    /* Card styling */
+    .result-card {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        margin-bottom: 1.5rem;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .image-card {
+        background: white;
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        border: 1px solid #e5e7eb;
+        text-align: center;
+    }
+    
+    /* Prediction badge */
+    .prediction-badge {
+        display: inline-block;
+        padding: 0.75rem 1.5rem;
+        border-radius: 25px;
+        font-size: 1.3rem;
+        font-weight: 600;
+        margin: 1rem 0;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+    
+    /* Confidence bar */
+    .confidence-container {
+        margin: 1.5rem 0;
+    }
+    
+    .confidence-label {
+        font-size: 0.9rem;
+        color: #6b7280;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+    
+    /* Severity badge */
+    .severity-badge {
+        display: inline-block;
+        padding: 0.6rem 1.2rem;
+        border-radius: 20px;
+        font-size: 1.1rem;
+        font-weight: 600;
+        margin: 0.5rem 0;
+        color: white;
+    }
+    
+    /* Detection info */
+    .detection-info {
+        background: #f0f9ff;
+        border-left: 4px solid #3b82f6;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    .detection-info-warning {
+        background: #fffbeb;
+        border-left: 4px solid #f59e0b;
+    }
+    
+    /* Info boxes */
+    .info-box {
+        background: #f9fafb;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .info-box-title {
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 0.5rem;
+    }
+    
+    /* Stats display */
+    .stat-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #e5e7eb;
+    }
+    
+    .stat-label {
+        color: #6b7280;
+        font-size: 0.9rem;
+    }
+    
+    .stat-value {
+        color: #111827;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    /* Button styling */
+    .stDownloadButton > button {
+        width: 100%;
+        border-radius: 8px;
+        font-weight: 500;
+        padding: 0.5rem 1rem;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: #f9fafb;
+    }
+    
+    /* Upload section */
+    .upload-section {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        border-radius: 12px;
+        padding: 2rem;
+        text-align: center;
+        margin: 2rem 0;
+    }
+    
+    /* Divider */
+    .divider {
+        height: 2px;
+        background: linear-gradient(to right, transparent, #e5e7eb, transparent);
+        margin: 2rem 0;
+    }
+    
+    /* Image container */
+    .image-container {
+        position: relative;
+        display: inline-block;
+        margin: 1rem 0;
+    }
+    
+    /* Footer */
+    .footer {
+        text-align: center;
+        padding: 2rem 0;
+        color: #6b7280;
+        font-size: 0.9rem;
+        margin-top: 3rem;
+        border-top: 1px solid #e5e7eb;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================================
+# MODEL CLASSES
+# ============================================================================
 class EFFResNetViT(nn.Module):
     def __init__(self, num_classes=4):
         super().__init__()
         self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
         self.res = timm.create_model("resnet50", pretrained=False, features_only=True)
+        
         eff_dim = self.eff.feature_info[-1]["num_chs"]
         res_dim = self.res.feature_info[-1]["num_chs"]
+        
         self.fusion = nn.Conv2d(eff_dim + res_dim, 768, kernel_size=1)
-        enc = nn.TransformerEncoderLayer(d_model=768, nhead=12, dim_feedforward=3072, dropout=0.2, batch_first=True)
+        
+        enc = nn.TransformerEncoderLayer(
+            d_model=768, nhead=12, dim_feedforward=3072,
+            dropout=0.2, batch_first=True
+        )
         self.transformer = nn.TransformerEncoder(enc, num_layers=3)
-        self.classifier = nn.Sequential(nn.LayerNorm(768), nn.Dropout(0.4), nn.Linear(768, num_classes))
+        
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(768),
+            nn.Dropout(0.4),
+            nn.Linear(768, num_classes)
+        )
+    
     def forward(self, x):
         eff = self.eff(x)[-1]
         res = self.res(x)[-1]
@@ -55,17 +284,25 @@ class EFFResNetViT(nn.Module):
         pooled = t.mean(dim=1)
         return self.classifier(pooled)
 
+
 class EFFResNetViTOrdinal(nn.Module):
     def __init__(self, num_classes=4):
         super().__init__()
         self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
         self.res = timm.create_model("resnet50", pretrained=False, features_only=True)
+        
         eff_dim = self.eff.feature_info[-1]["num_chs"]
         res_dim = self.res.feature_info[-1]["num_chs"]
+        
         self.fusion = nn.Conv2d(eff_dim + res_dim, 768, kernel_size=1)
-        enc = nn.TransformerEncoderLayer(d_model=768, nhead=12, dim_feedforward=3072, dropout=0.1, batch_first=True)
+        
+        enc = nn.TransformerEncoderLayer(
+            d_model=768, nhead=12, dim_feedforward=3072,
+            dropout=0.1, batch_first=True
+        )
         self.transformer = nn.TransformerEncoder(enc, num_layers=2)
         self.ordinal_head = nn.Linear(768, num_classes - 1)
+    
     def forward(self, x):
         eff = self.eff(x)[-1]
         res = self.res(x)[-1]
@@ -76,86 +313,75 @@ class EFFResNetViTOrdinal(nn.Module):
         pooled = t.mean(dim=1)
         return self.ordinal_head(pooled)
 
+
+# ============================================================================
+# TRANSFORM
+# ============================================================================
 transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
 ])
 
-class ScoreCAM:
-    def __init__(self, model, target_layer):
-        self.model = model
-        self.target_layer = target_layer
-        self.activations = None
-        target_layer.register_forward_hook(self._hook)
-    def _hook(self, module, inp, out):
-        self.activations = out.detach()
-    def generate(self, x, class_idx, max_maps=64):
-        self.model.eval()
-        with torch.no_grad():
-            _ = self.model(x)
-        if self.activations is None:
-            return None
-        maps = torch.relu(self.activations[0])
-        cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
-        num_maps = min(max_maps, maps.shape[0])
-        for i in range(num_maps):
-            m = maps[i]
-            mmin, mmax = m.min(), m.max()
-            if (mmax - mmin).abs() < 1e-6: continue
-            m = (m - mmin) / (mmax - mmin + 1e-8)
-            m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
-            m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
-            masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
-            with torch.no_grad():
-                out = self.model(masked)
-                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
-            cam += score * m_up
-        if cam.max() <= 0: return None
-        return cam / (cam.max() + 1e-8)
-
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 def download_if_missing(file_id: str, out_path: str, desc: str):
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 1024: return True
+    """Download model from Google Drive if not present"""
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+        return True
+    
     url = f"https://drive.google.com/uc?id={file_id}"
     try:
-        with st.spinner(f"Downloading {desc}..."):
+        with st.spinner(f"Downloading {desc} model..."):
             gdown.download(url, out_path, quiet=False)
         return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
     except:
         return False
 
+
 @st.cache_resource
 def load_classification_model(path: str):
+    """Load classification model"""
     m = EFFResNetViT(num_classes=4).to(DEVICE)
     m.load_state_dict(torch.load(path, map_location=DEVICE))
     m.eval()
     return m
 
+
 @st.cache_resource
 def load_ordinal_model(path: str):
+    """Load ordinal severity model"""
     m = EFFResNetViTOrdinal(num_classes=4).to(DEVICE)
     m.load_state_dict(torch.load(path, map_location=DEVICE))
     m.eval()
     return m
 
+
 @st.cache_resource
 def load_yolo_model(path: str):
-    if not HAS_ULTRALYTICS: return (None, None)
+    """Load YOLO polyp detection model"""
+    if not HAS_ULTRALYTICS:
+        return (None, None)
     try:
         return ("ultralytics", YOLO(path))
     except:
         return (None, None)
 
+
 def predict_class(model, pil_img):
+    """Predict class from image"""
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         logits = model(x)
         probs = torch.softmax(logits, dim=1)[0]
         pred = int(probs.argmax())
         conf = float(probs[pred])
-    return pred, conf, x
+    return pred, conf, probs.cpu().numpy()
+
 
 def predict_ordinal(ordinal_model, pil_img):
+    """Predict ordinal severity"""
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         logits = ordinal_model(x)
@@ -163,138 +389,348 @@ def predict_ordinal(ordinal_model, pil_img):
         label = int((probs > 0.5).sum())
     return label, probs
 
+
 def run_yolo(yolo_loader, src_image, conf=0.25):
-    if yolo_loader[0] != "ultralytics": return []
-    img_bgr = cv2.cvtColor(np.array(src_image.resize((IMG_SIZE*2, IMG_SIZE*2))), cv2.COLOR_RGB2BGR)
+    """Run YOLO polyp detection"""
+    if yolo_loader[0] != "ultralytics":
+        return []
+    
+    # Use higher resolution for detection
+    img_bgr = cv2.cvtColor(
+        np.array(src_image.resize((640, 640))), 
+        cv2.COLOR_RGB2BGR
+    )
+    
     results = yolo_loader[1].predict(source=img_bgr, conf=conf, verbose=False)
     r = results[0]
+    
     boxes = []
     for b in r.boxes.data.tolist():
-        x1,y1,x2,y2,confv,cls = b
-        boxes.append({"xyxy": np.array([x1,y1,x2,y2]), "conf": confv})
+        x1, y1, x2, y2, confv, cls = b
+        boxes.append({
+            "xyxy": np.array([x1, y1, x2, y2]),
+            "conf": confv
+        })
+    
     return boxes
 
-def overlay_boxes(image, boxes):
-    arr = np.array(image.convert("RGB"))
-    h, w = arr.shape[:2]
-    sx = w / (IMG_SIZE*2)
-    sy = h / (IMG_SIZE*2)
-    for b in boxes:
-        x1,y1,x2,y2 = (int(v*s) for v,s in zip(b["xyxy"], [sx,sy,sx,sy]))
-        cv2.rectangle(arr, (x1,y1), (x2,y2), (0,255,0), 3)
-        cv2.putText(arr, f"{b['conf']:.2f}", (x1, max(20,y1-8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-    return Image.fromarray(arr)
 
+def overlay_boxes_high_quality(image, boxes):
+    """Overlay detection boxes with high quality rendering"""
+    # Work with original image resolution
+    img_pil = image.convert("RGB")
+    draw = ImageDraw.Draw(img_pil)
+    
+    # Try to load a nice font, fall back to default
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+    except:
+        font = ImageFont.load_default()
+    
+    # Scale factors from detection resolution (640x640) to original
+    w, h = img_pil.size
+    sx = w / 640
+    sy = h / 640
+    
+    for idx, b in enumerate(boxes):
+        x1, y1, x2, y2 = b["xyxy"]
+        
+        # Scale coordinates to original image size
+        x1 = int(x1 * sx)
+        y1 = int(y1 * sy)
+        x2 = int(x2 * sx)
+        y2 = int(y2 * sy)
+        
+        # Draw semi-transparent fill
+        overlay = Image.new('RGBA', img_pil.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rectangle([x1, y1, x2, y2], fill=(59, 130, 246, 40))
+        img_pil = Image.alpha_composite(img_pil.convert('RGBA'), overlay).convert('RGB')
+        draw = ImageDraw.Draw(img_pil)
+        
+        # Draw thick border
+        line_width = max(3, int(min(w, h) * 0.005))
+        for offset in range(line_width):
+            draw.rectangle(
+                [x1 - offset, y1 - offset, x2 + offset, y2 + offset],
+                outline=(59, 130, 246),
+                width=1
+            )
+        
+        # Draw label background
+        label_text = f"Polyp #{idx + 1} ({b['conf']*100:.1f}%)"
+        
+        # Get text size
+        bbox = draw.textbbox((0, 0), label_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        label_y = y1 - text_height - 10 if y1 - text_height - 10 > 0 else y2 + 5
+        
+        # Draw label background with padding
+        padding = 8
+        draw.rectangle(
+            [x1, label_y - padding, x1 + text_width + 2*padding, label_y + text_height + padding],
+            fill=(59, 130, 246),
+            outline=(37, 99, 235),
+            width=2
+        )
+        
+        # Draw text
+        draw.text(
+            (x1 + padding, label_y),
+            label_text,
+            fill=(255, 255, 255),
+            font=font
+        )
+    
+    return img_pil
+
+
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
+
+# Header
 st.markdown("""
-<style>
-    .main {background: linear-gradient(180deg, #0f172a 0%, #1e2937 100%);}
-    h1 {color: #60a5fa; text-align: center; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; margin-bottom: 0;}
-    .subtitle {text-align: center; color: #94a3b8; font-size: 1.1rem; margin-bottom: 2rem;}
-    .card {background: #1e2937; padding: 24px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); border: 1px solid #334155;}
-    .badge {padding: 12px 28px; border-radius: 50px; font-size: 1.6rem; font-weight: 700; display: inline-block; margin: 12px 0;}
-    .img-container {border: 3px solid #334155; border-radius: 16px; overflow: hidden;}
-    .section-header {color: #60a5fa; border-bottom: 2px solid #334155; padding-bottom: 8px;}
-    .severity {font-size: 1.3rem; font-weight: 600;}
-</style>
+<div class="main-header">
+    <h1>🔬 GI Tract Diagnosis System</h1>
+    <p>Deep Learning Framework for Gastrointestinal Disorder Detection</p>
+</div>
 """, unsafe_allow_html=True)
 
-st.title("Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders")
-st.markdown('<p class="subtitle">EFFResNetViT • Score-CAM • Ordinal Severity • YOLO Polyp Detection</p>', unsafe_allow_html=True)
+# Sidebar
+st.sidebar.header("⚙️ Configuration")
 
-st.sidebar.header("Configuration")
-show_scorecam = st.sidebar.checkbox("Enable Score-CAM", value=True)
-conf_threshold = st.sidebar.slider("YOLO Confidence", 0.05, 0.95, 0.25, 0.01)
-st.sidebar.markdown("### Model Status")
+conf_threshold = st.sidebar.slider(
+    "YOLO Detection Confidence",
+    min_value=0.05,
+    max_value=0.95,
+    value=0.25,
+    step=0.05,
+    help="Minimum confidence threshold for polyp detection"
+)
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Model Status")
+
+# Download and load models
 dl_ok = {}
 for k in DRIVE_IDS:
     ok = download_if_missing(DRIVE_IDS[k], MODEL_PATHS[k], k)
     dl_ok[k] = ok
     if ok:
-        st.sidebar.success(f"✅ {k.capitalize()}")
+        st.sidebar.success(f"✅ {k.capitalize()} Model")
     else:
-        st.sidebar.error(f"❌ {k.capitalize()}")
+        st.sidebar.error(f"❌ {k.capitalize()} Model")
 
-classification_model = load_classification_model(MODEL_PATHS["classifier"]) if dl_ok.get("classifier") and os.path.exists(MODEL_PATHS["classifier"]) else None
-ordinal_model = load_ordinal_model(MODEL_PATHS["ordinal"]) if dl_ok.get("ordinal") and os.path.exists(MODEL_PATHS["ordinal"]) else None
-yolo_loader = load_yolo_model(MODEL_PATHS["polyp"]) if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]) and HAS_ULTRALYTICS else (None, None)
+# Load models
+classification_model = None
+ordinal_model = None
+yolo_loader = (None, None)
 
-uploaded = st.file_uploader("Upload colonoscopy images (JPG/PNG)", type=["jpg","jpeg","png"], accept_multiple_files=True)
+if dl_ok.get("classifier") and os.path.exists(MODEL_PATHS["classifier"]):
+    classification_model = load_classification_model(MODEL_PATHS["classifier"])
+
+if dl_ok.get("ordinal") and os.path.exists(MODEL_PATHS["ordinal"]):
+    ordinal_model = load_ordinal_model(MODEL_PATHS["ordinal"])
+
+if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]) and HAS_ULTRALYTICS:
+    yolo_loader = load_yolo_model(MODEL_PATHS["polyp"])
+
+# System info
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💻 System Info")
+st.sidebar.info(f"**Device:** {DEVICE.type.upper()}")
+st.sidebar.info(f"**Image Size:** {IMG_SIZE}×{IMG_SIZE}")
+
+# Main content
+st.markdown("""
+<div class="info-box">
+    <div class="info-box-title">📋 Supported Conditions</div>
+    <div style="margin-top: 0.5rem;">
+        <span style="color: #10b981; font-weight: 600;">● Normal</span> • 
+        <span style="color: #f59e0b; font-weight: 600;">● Ulcerative Colitis</span> • 
+        <span style="color: #3b82f6; font-weight: 600;">● Polyps</span> • 
+        <span style="color: #8b5cf6; font-weight: 600;">● Esophagitis</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# File uploader
+uploaded = st.file_uploader(
+    "📤 Upload Colonoscopy Images",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+    help="Upload one or more colonoscopy images for analysis"
+)
 
 if uploaded:
-    progress = st.progress(0)
+    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+    st.markdown("## 🔍 Analysis Results")
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
     for idx, f in enumerate(uploaded):
+        status_text.text(f"Processing image {idx+1} of {len(uploaded)}...")
+        
         img = Image.open(f).convert("RGB")
-        col1, col2 = st.columns([1, 1.1])
+        
+        # Create two columns
+        col1, col2 = st.columns([1, 1.2])
         
         with col1:
-            st.markdown('<div class="img-container">', unsafe_allow_html=True)
-            st.image(img, caption=f"Image {idx+1}", width=DISPLAY_WIDTH)
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="image-card">
+                <h3 style="margin-top: 0; color: #374151;">📷 Image {idx+1}</h3>
+            </div>
+            """, unsafe_allow_html=True)
+            st.image(img, use_container_width=True)
         
         with col2:
-            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown('<div class="result-card">', unsafe_allow_html=True)
+            
             if not classification_model:
-                st.error("Classifier not loaded")
+                st.error("❌ Classification model not loaded")
                 st.markdown('</div>', unsafe_allow_html=True)
                 continue
             
-            pred, conf, x = predict_class(classification_model, img)
+            # Predict
+            pred, conf, all_probs = predict_class(classification_model, img)
             color = CLASS_COLORS[pred]
             name = CLASS_NAMES[pred]
+            icon = CLASS_ICONS[pred]
             
-            st.markdown(f'<div class="badge" style="background:{color};color:white;">{name}</div>', unsafe_allow_html=True)
-            st.progress(conf, text=f"Confidence: {conf*100:.1f}%")
+            # Display prediction
+            st.markdown(f"""
+            <div style="text-align: center;">
+                <div class="prediction-badge" style="background-color: {color}; color: white;">
+                    {icon} {name}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Polyp detection
-            if pred == 2:
-                if yolo_loader[0] == "ultralytics":
-                    boxes = run_yolo(yolo_loader, img, conf_threshold)
-                    if boxes:
-                        over = overlay_boxes(img, boxes)
-                        st.image(over, caption="YOLO Polyp Detections", width=DISPLAY_WIDTH)
-                        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                        over.save(tmp.name)
-                        st.download_button("📥 Download Detections", open(tmp.name,"rb"), f"detections_{idx+1}.png", key=f"download_detections_{idx}")
-                    else:
-                        st.info("No polyps detected")
-                else:
-                    st.info("YOLO unavailable")
-            
-            # UC severity
-            if pred == 1 and ordinal_model:
-                label, _ = predict_ordinal(ordinal_model, img)
-                severity_text = ["Remission", "Mild", "Moderate", "Severe"][label]
-                severity_color = ["#22c55e", "#eab308", "#f97316", "#ef4444"][label]
-                st.markdown(f'<div class="severity" style="color:{severity_color};">Severity: {severity_text} ({label}/3)</div>', unsafe_allow_html=True)
-            
+            # Confidence
+            st.markdown('<div class="confidence-container">', unsafe_allow_html=True)
+            st.markdown('<div class="confidence-label">Confidence Score</div>', unsafe_allow_html=True)
+            st.progress(conf, text=f"{conf*100:.2f}%")
             st.markdown('</div>', unsafe_allow_html=True)
             
-            # Score-CAM
-            if show_scorecam and classification_model:
-                try:
-                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])
-                    cam = sc.generate(x, pred)
-                    if cam is not None:
-                        heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_JET)
-                        heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
-                        img_res = np.array(img.resize((IMG_SIZE,IMG_SIZE))).astype("uint8")
-                        overlay = (0.6*img_res + 0.4*heat).astype("uint8")
-                        
-                        st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability</p>', unsafe_allow_html=True)
-                        st.image(heat, caption="Heatmap", width=DISPLAY_WIDTH)
-                        st.image(overlay, caption="Overlay", width=DISPLAY_WIDTH)
-                        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                        Image.fromarray(overlay).save(tmp.name)
-                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"download_scorecam_{idx}")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                except:
-                    pass
+            # All class probabilities
+            with st.expander("📊 View All Class Probabilities"):
+                for i, prob in enumerate(all_probs):
+                    st.write(f"**{CLASS_NAMES[i]}:** {prob*100:.2f}%")
+                    st.progress(float(prob))
+            
+            st.markdown('</div>', unsafe_allow_html=True)
         
-        progress.progress((idx+1)/len(uploaded))
-    progress.empty()
+        # Additional analyses based on prediction
+        if pred == 2 and yolo_loader[0] == "ultralytics":
+            # Polyp detection
+            st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+            st.markdown("### 🎯 Polyp Detection Results")
+            
+            boxes = run_yolo(yolo_loader, img, conf_threshold)
+            
+            if boxes:
+                detection_col1, detection_col2 = st.columns([1, 1])
+                
+                with detection_col1:
+                    st.markdown(f"""
+                    <div class="detection-info">
+                        <strong>✓ {len(boxes)} Polyp(s) Detected</strong><br>
+                        <small>Confidence threshold: {conf_threshold*100:.0f}%</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Show detection stats
+                    for i, box in enumerate(boxes):
+                        st.metric(
+                            f"Polyp #{i+1}",
+                            f"{box['conf']*100:.1f}%",
+                            delta="Detected"
+                        )
+                
+                with detection_col2:
+                    over = overlay_boxes_high_quality(img, boxes)
+                    st.image(over, caption="Detected Polyps", use_container_width=True)
+                    
+                    # Download button
+                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    over.save(tmp.name, quality=95)
+                    with open(tmp.name, "rb") as file:
+                        st.download_button(
+                            label="📥 Download Detection Image",
+                            data=file,
+                            file_name=f"polyp_detection_{idx+1}.png",
+                            mime="image/png",
+                            key=f"download_detection_{idx}"
+                        )
+            else:
+                st.markdown("""
+                <div class="detection-info detection-info-warning">
+                    <strong>ℹ️ No polyps detected above confidence threshold</strong><br>
+                    <small>Try adjusting the confidence threshold in the sidebar</small>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        elif pred == 2:
+            st.info("⚠️ YOLO model unavailable for polyp detection")
+        
+        # UC severity assessment
+        if pred == 1 and ordinal_model:
+            st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+            st.markdown("### 📈 Ulcerative Colitis Severity Assessment")
+            
+            label, probs = predict_ordinal(ordinal_model, img)
+            severity_names = ["Remission", "Mild", "Moderate", "Severe"]
+            severity_colors = ["#10b981", "#f59e0b", "#fb923c", "#ef4444"]
+            
+            severity_col1, severity_col2 = st.columns([1, 1])
+            
+            with severity_col1:
+                st.markdown(f"""
+                <div style="text-align: center; padding: 1rem;">
+                    <div class="severity-badge" style="background-color: {severity_colors[label]};">
+                        {severity_names[label]}
+                    </div>
+                    <div style="margin-top: 1rem; font-size: 1.1rem; color: #6b7280;">
+                        Severity Grade: <strong>{label}/3</strong>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with severity_col2:
+                st.markdown("**Ordinal Probabilities:**")
+                for i, p in enumerate(probs):
+                    st.write(f"Stage {i+1}: {p*100:.2f}%")
+                    st.progress(float(p))
+        
+        # Separator between images
+        if idx < len(uploaded) - 1:
+            st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+        
+        progress_bar.progress((idx + 1) / len(uploaded))
+    
+    status_text.text("✓ Analysis complete!")
+    progress_bar.empty()
+    status_text.empty()
 
 else:
-    st.info("👆 Upload images to begin analysis")
+    st.markdown("""
+    <div class="upload-section">
+        <h3 style="color: #374151; margin-top: 0;">👆 Upload Images to Begin</h3>
+        <p style="color: #6b7280; margin-bottom: 0;">
+            Upload colonoscopy images in JPG or PNG format for automated diagnosis
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+# Footer
+st.markdown("""
+<div class="footer">
+    <strong>Deep Learning Framework for GI Tract Disorder Diagnosis</strong><br>
+    Final Year Project 2026 • EFFResNetViT Architecture with YOLO Detection
+</div>
+""", unsafe_allow_html=True)
