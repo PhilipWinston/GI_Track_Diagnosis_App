@@ -82,8 +82,7 @@ transform = transforms.Compose([
     transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
 ])
 
-# Replace your entire ScoreCAM class with this:
-# Replace your entire ScoreCAM class with this (perfect for your EFFResNetViT model)
+# Replace your entire ScoreCAM class with this (tailored for EFFResNetViT)
 class ScoreCAM:
     def __init__(self, model, target_layer):
         self.model = model
@@ -98,40 +97,36 @@ class ScoreCAM:
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
-        if self.activations is None:
-            return None
+        if self.activations is None: return None
         maps = torch.relu(self.activations[0])
         cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
         for i in range(min(max_maps, maps.shape[0])):
             m = maps[i]
             mmin, mmax = m.min(), m.max()
-            if (mmax - mmin).abs() < 1e-6: continue
-            m = (m - mmin) / (mmax - mmin + 1e-8)
+            if (mmax-mmin).abs()<1e-6: continue
+            m = (m-mmin)/(mmax-mmin+1e-8)
             m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
             m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
             masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
             with torch.no_grad():
                 out = self.model(masked)
-                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
+                score = float(torch.softmax(out,dim=1)[0,class_idx].item())
             cam += score * m_up
-        if cam.max() <= 0: return None
-        cam /= (cam.max() + 1e-8)
+        if cam.max()<=0: return None
+        cam /= (cam.max()+1e-8)
 
         if original_img is not None:
-            # Auto crop black borders + strong foreground mask (exactly like your notebook)
-            arr = np.array(original_img)
+            arr = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
             gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
             mask = (gray > 18).astype(np.float32)
             mask = cv2.GaussianBlur(mask, (9,9), 0)
-            cam = cv2.resize(cam, (arr.shape[1], arr.shape[0])) * mask
-            cam = cv2.resize(cam, (IMG_SIZE, IMG_SIZE))
+            cam *= mask
 
-            # Medical center bias
             h, w = cam.shape
             y, xgrid = np.ogrid[:h, :w]
-            center_dist = np.sqrt((xgrid - w/2)**2 + (y - h/2)**2)
+            center_dist = np.sqrt((xgrid-w/2)**2 + (y-h/2)**2)
             center_dist /= center_dist.max()
-            cam *= (1 - 0.25 * center_dist)
+            cam *= (1 - 0.25*center_dist)
 
         cam = cam / (cam.max() + 1e-8)
         return cam
@@ -295,7 +290,7 @@ if uploaded:
             # Score-CAM
             if show_scorecam and classification_model:
                 try:
-                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])
+                    sc = ScoreCAM(classification_model, classification_model.fusion)
                     cam = sc.generate(x, pred, original_img=img)
                     if cam is not None:
                         heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_TURBO)
@@ -320,6 +315,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
