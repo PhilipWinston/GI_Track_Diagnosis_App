@@ -75,234 +75,207 @@ st.markdown("""
     .block-container {
         padding-top: 1rem;
         padding-bottom: 0rem;
-    }
-    
-    /* Main styling */
-    .main {
-        padding: 0;
+        max-width: 100%;
     }
     
     /* Header styling */
     .main-header {
         text-align: center;
-        padding: 2rem 1rem;
+        padding: 2.5rem 1rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border-radius: 15px;
         margin-bottom: 2rem;
-        color: white;
     }
     
     .main-header h1 {
         font-size: 2.5rem;
         font-weight: 700;
-        margin-bottom: 0.5rem;
+        margin: 0;
         color: white !important;
     }
     
     .main-header p {
         font-size: 1.1rem;
+        margin: 0.5rem 0 0 0;
+        color: white !important;
         opacity: 0.95;
-        margin: 0;
-        color: white;
     }
     
     /* Card styling */
     .result-card {
         background: white;
         border-radius: 12px;
-        padding: 1.5rem;
+        padding: 2rem;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
         margin-bottom: 1.5rem;
         border: 1px solid #e5e7eb;
+        height: 100%;
     }
     
     .image-card {
         background: white;
         border-radius: 12px;
-        padding: 0.75rem;
+        padding: 1.5rem;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
         border: 1px solid #e5e7eb;
         text-align: center;
-        margin-bottom: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .image-card h3 {
+        margin: 0 0 1rem 0;
+        color: #1f2937 !important;
+        font-size: 1.3rem;
     }
     
     /* Prediction badge */
     .prediction-badge {
         display: inline-block;
-        padding: 0.75rem 1.5rem;
-        border-radius: 25px;
-        font-size: 1.3rem;
-        font-weight: 600;
-        margin: 1rem 0;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        padding: 1rem 2rem;
+        border-radius: 30px;
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin: 1.5rem 0;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
         color: white !important;
     }
     
-    /* Confidence bar */
+    /* Confidence container */
     .confidence-container {
-        margin: 1.5rem 0;
+        margin: 2rem 0;
     }
     
     .confidence-label {
-        font-size: 0.9rem;
-        color: #6b7280;
-        margin-bottom: 0.5rem;
-        font-weight: 500;
+        font-size: 1rem;
+        color: #374151 !important;
+        margin-bottom: 0.75rem;
+        font-weight: 600;
     }
     
     /* Severity badge */
     .severity-badge {
         display: inline-block;
-        padding: 0.6rem 1.2rem;
-        border-radius: 20px;
-        font-size: 1.1rem;
-        font-weight: 600;
-        margin: 0.5rem 0;
+        padding: 0.75rem 1.5rem;
+        border-radius: 25px;
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin: 1rem 0;
         color: white !important;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     }
     
     /* Detection info */
     .detection-info {
         background: #dbeafe;
-        border-left: 4px solid #3b82f6;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-        color: #1e40af !important;
+        border-left: 5px solid #3b82f6;
+        padding: 1.25rem;
+        border-radius: 10px;
+        margin: 1.5rem 0;
     }
     
-    .detection-info strong {
+    .detection-title {
+        font-size: 1.15rem;
+        font-weight: 700;
         color: #1e3a8a !important;
+        margin-bottom: 0.5rem;
+    }
+    
+    .detection-subtitle {
+        font-size: 0.95rem;
+        color: #1e40af !important;
     }
     
     .detection-info-warning {
         background: #fef3c7;
-        border-left: 4px solid #f59e0b;
-        color: #92400e !important;
+        border-left: 5px solid #f59e0b;
     }
     
-    .detection-info-warning strong {
+    .detection-info-warning .detection-title {
         color: #78350f !important;
+    }
+    
+    .detection-info-warning .detection-subtitle {
+        color: #92400e !important;
     }
     
     /* Info boxes */
     .info-box {
         background: #f9fafb;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
+        border-radius: 10px;
+        padding: 1.25rem;
+        margin: 1.5rem 0;
         border: 1px solid #e5e7eb;
     }
     
     .info-box-title {
-        font-weight: 600;
-        color: #374151;
-        margin-bottom: 0.5rem;
+        font-weight: 700;
+        color: #1f2937 !important;
+        margin-bottom: 0.75rem;
+        font-size: 1.1rem;
     }
     
     /* Stats display */
     .stat-row {
         display: flex;
         justify-content: space-between;
-        padding: 0.5rem 0;
+        padding: 0.75rem 0;
         border-bottom: 1px solid #e5e7eb;
     }
     
     .stat-label {
-        color: #6b7280;
-        font-size: 0.9rem;
+        color: #6b7280 !important;
+        font-size: 1rem;
     }
     
     .stat-value {
-        color: #111827;
+        color: #111827 !important;
         font-weight: 600;
-        font-size: 0.9rem;
-    }
-    
-    /* Button styling */
-    .stDownloadButton > button {
-        width: 100%;
-        border-radius: 8px;
-        font-weight: 500;
-        padding: 0.5rem 1rem;
-    }
-    
-    /* Sidebar styling */
-    .css-1d391kg {
-        background-color: #f9fafb;
-    }
-    
-    /* Upload section */
-    .upload-section {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        border-radius: 12px;
-        padding: 2rem;
-        text-align: center;
-        margin: 2rem 0;
+        font-size: 1rem;
     }
     
     /* Divider */
     .divider {
         height: 2px;
         background: linear-gradient(to right, transparent, #e5e7eb, transparent);
+        margin: 3rem 0;
+    }
+    
+    /* Upload section */
+    .upload-section {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        border-radius: 12px;
+        padding: 3rem 2rem;
+        text-align: center;
         margin: 2rem 0;
     }
     
-    /* Image container */
-    .image-container {
-        position: relative;
-        display: inline-block;
-        margin: 1rem 0;
+    .upload-section h3 {
+        color: #1f2937 !important;
+        margin-top: 0;
+    }
+    
+    .upload-section p {
+        color: #4b5563 !important;
     }
     
     /* Footer */
     .footer {
         text-align: center;
         padding: 2rem 0;
-        color: #6b7280;
-        font-size: 0.9rem;
+        color: #6b7280 !important;
+        font-size: 0.95rem;
         margin-top: 3rem;
         border-top: 1px solid #e5e7eb;
     }
     
-    /* Remove extra padding and margins */
-    .element-container {
-        margin-bottom: 0 !important;
-    }
-    
-    /* Remove white space from images */
-    .stImage {
-        margin: 0 !important;
-        padding: 0 !important;
-    }
-    
-    .stImage > img {
-        display: block !important;
-    }
-    
-    /* Compact file uploader */
-    [data-testid="stFileUploader"] {
-        padding: 0.5rem 0;
-    }
-    
-    /* Remove extra space in columns */
+    /* Streamlit overrides */
     [data-testid="column"] {
-        padding: 0.25rem !important;
+        padding: 0.5rem;
     }
     
-    /* Remove gaps */
-    .row-widget {
-        gap: 0.5rem !important;
-    }
-    
-    /* Ensure text is visible */
-    h1, h2, h3, h4, h5, h6, p, span, div {
-        color: inherit !important;
-    }
-    
-    /* Remove space between image card and image */
-    div[data-testid="stVerticalBlock"] > div {
-        gap: 0 !important;
+    /* Make sure all text is visible */
+    p, span, div, h1, h2, h3, h4, h5, h6 {
+        color: inherit;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -475,93 +448,92 @@ def run_yolo(yolo_loader, src_image, conf=0.25):
 
 
 def overlay_boxes_high_quality(image, boxes):
-    """Overlay detection boxes with high quality rendering - optimized for visibility"""
-    # Work with original image resolution
+    """Overlay detection boxes with high quality rendering"""
+    # Convert to RGB
     img_pil = image.convert("RGB")
     w, h = img_pil.size
     
-    # Scale factors from detection resolution (640x640) to original
-    sx = w / 640
-    sy = h / 640
-    
-    # Create drawing context
+    # Create drawing object
     draw = ImageDraw.Draw(img_pil)
     
-    # Calculate appropriate font size based on image dimensions - reduced for better fit
-    font_size = max(10, min(w, h) // 50)  # Smaller font size
+    # Calculate font size (smaller and responsive)
+    font_size = max(14, min(w, h) // 35)
+    
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
     except:
         try:
             font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
         except:
+            # Fallback to default font
             font = ImageFont.load_default()
     
-    for idx, b in enumerate(boxes):
-        x1, y1, x2, y2 = b["xyxy"]
+    # Scale factors from YOLO resolution (640x640) to image size
+    sx = w / 640
+    sy = h / 640
+    
+    for idx, box in enumerate(boxes):
+        x1, y1, x2, y2 = box["xyxy"]
         
-        # Scale coordinates to original image size
-        x1 = int(x1 * sx)
-        y1 = int(y1 * sy)
-        x2 = int(x2 * sx)
-        y2 = int(y2 * sy)
+        # Scale to image coordinates
+        x1 = max(0, int(x1 * sx))
+        y1 = max(0, int(y1 * sy))
+        x2 = min(w, int(x2 * sx))
+        y2 = min(h, int(y2 * sy))
         
-        # Ensure coordinates are within image bounds
-        x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
-        x2 = max(0, min(x2, w - 1))
-        y2 = max(0, min(y2, h - 1))
-        
-        # Calculate appropriate line width
-        line_width = max(2, int(min(w, h) * 0.003))
-        
-        # Draw the main bounding box with thick lines
-        for offset in range(line_width):
+        # Draw bounding box with green color
+        line_width = max(3, min(w, h) // 200)
+        for i in range(line_width):
             draw.rectangle(
-                [x1 + offset, y1 + offset, x2 - offset, y2 - offset],
+                [x1 + i, y1 + i, x2 - i, y2 - i],
                 outline=(0, 255, 0),
                 width=1
             )
         
-        # Prepare label with shorter text
-        label_text = f"#{idx + 1} {b['conf']*100:.0f}%"  # Shorter label
+        # Create label text - shorter format
+        label = f"Polyp {idx + 1} - {box['conf']*100:.0f}%"
         
-        # Get text bounding box
-        bbox = draw.textbbox((0, 0), label_text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
+        # Get text dimensions
+        bbox = draw.textbbox((0, 0), label, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
         
-        # Calculate label position - ensure it stays within image bounds
-        padding = max(3, font_size // 5)  # Smaller padding
-        label_width = text_width + 2 * padding
-        label_height = text_height + 2 * padding
+        # Add padding
+        pad = 6
+        label_w = text_w + 2 * pad
+        label_h = text_h + 2 * pad
         
-        # Try to place label above the box, if not enough space, place it below
-        if y1 - label_height - 3 >= 0:
-            label_y = y1 - label_height - 3
-        elif y2 + label_height + 3 <= h:
-            label_y = y2 + 3
+        # Position label (above box if space, otherwise below)
+        if y1 - label_h - 5 > 0:
+            # Above the box
+            label_x = x1
+            label_y = y1 - label_h - 5
+        elif y2 + label_h + 5 < h:
+            # Below the box
+            label_x = x1
+            label_y = y2 + 5
         else:
-            # Place inside the box at the top
-            label_y = y1 + 3
+            # Inside the box at top
+            label_x = x1 + 5
+            label_y = y1 + 5
         
-        # Ensure label doesn't exceed image width
-        label_x = x1
-        if label_x + label_width > w:
-            label_x = max(0, w - label_width - 3)
+        # Make sure label doesn't go off screen
+        if label_x + label_w > w:
+            label_x = w - label_w - 5
+        label_x = max(5, label_x)
         
-        # Draw label background
+        # Draw label background (green)
         draw.rectangle(
-            [label_x, label_y, label_x + label_width, label_y + label_height],
+            [label_x, label_y, label_x + label_w, label_y + label_h],
             fill=(0, 200, 0),
             outline=(0, 150, 0),
-            width=1
+            width=2
         )
         
-        # Draw text
+        # Draw label text (white)
         draw.text(
-            (label_x + padding, label_y + padding),
-            label_text,
+            (label_x + pad, label_y + pad),
+            label,
             fill=(255, 255, 255),
             font=font
         )
@@ -665,10 +637,10 @@ if uploaded:
         with col1:
             st.markdown(f"""
             <div class="image-card">
-                <h3 style="margin: 0 0 0.5rem 0; color: #374151;">📷 Image {idx+1}</h3>
-            </div>
+                <h3>📷 Image {idx+1}</h3>
             """, unsafe_allow_html=True)
             st.image(img, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
         
         with col2:
             st.markdown('<div class="result-card">', unsafe_allow_html=True)
@@ -721,12 +693,8 @@ if uploaded:
                 with detection_col1:
                     st.markdown(f"""
                     <div class="detection-info">
-                        <div style="font-size: 1.1rem; font-weight: 600; color: #1e3a8a; margin-bottom: 0.5rem;">
-                            ✓ {len(boxes)} Polyp(s) Detected
-                        </div>
-                        <div style="font-size: 0.9rem; color: #1e40af;">
-                            Confidence threshold: {conf_threshold*100:.0f}%
-                        </div>
+                        <div class="detection-title">✓ {len(boxes)} Polyp(s) Detected</div>
+                        <div class="detection-subtitle">Confidence threshold: {conf_threshold*100:.0f}%</div>
                     </div>
                     """, unsafe_allow_html=True)
                     
@@ -756,8 +724,8 @@ if uploaded:
             else:
                 st.markdown("""
                 <div class="detection-info detection-info-warning">
-                    <strong>ℹ️ No polyps detected above confidence threshold</strong><br>
-                    <small>Try adjusting the confidence threshold in the sidebar</small>
+                    <div class="detection-title">ℹ️ No polyps detected</div>
+                    <div class="detection-subtitle">Try adjusting the confidence threshold in the sidebar</div>
                 </div>
                 """, unsafe_allow_html=True)
         
