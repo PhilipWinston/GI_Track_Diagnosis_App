@@ -122,11 +122,7 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
-    .image-card h3 {
-        margin: 0 0 1rem 0;
-        color: #1f2937 !important;
-        font-size: 1.3rem;
-    }
+    
     
     /* Prediction badge */
     .prediction-badge {
@@ -788,3 +784,4 @@ st.markdown("""
     Final Year Project 2026 • EFFResNetViT Architecture with YOLO Detection
 </div>
 """, unsafe_allow_html=True)
+
