@@ -1,7 +1,5 @@
 import os
-import time
 import tempfile
-from typing import List, Tuple
 import streamlit as st
 import torch
 import timm
@@ -82,64 +80,44 @@ transform = transforms.Compose([
     transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
 ])
 
-class ScoreCAM:
+# GRAD-CAM (replaces Score-CAM)
+class GradCAM:
     def __init__(self, model, target_layer):
         self.model = model
         self.target_layer = target_layer
+        self.gradients = None
         self.activations = None
-        target_layer.register_forward_hook(self._hook)
+        target_layer.register_forward_hook(self.save_activation)
+        target_layer.register_backward_hook(self.save_gradient)
 
-    def _hook(self, module, inp, out):
-        self.activations = out.detach()
+    def save_activation(self, module, input, output):
+        self.activations = output.detach()
 
-    def get_robust_mask(self, img):
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (11,11), 0)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        kernel = np.ones((15,15), np.uint8)
-        mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        h,w = gray.shape
-        final = np.zeros((h,w), dtype=np.uint8)
-        if contours:
-            largest = max(contours, key=cv2.contourArea)
-            cv2.drawContours(final, [largest], -1, 255, -1)
-        else:
-            cv2.circle(final, (w//2, h//2), int(min(w,h)*0.45), 255, -1)
-        final = cv2.GaussianBlur(final, (25,25), 0)
-        return final.astype(np.float32)/255.0
+    def save_gradient(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0].detach()
 
-    def generate(self, x, class_idx, original_img=None, max_maps=6):
-        self.model.eval()
-        with torch.no_grad():
-            _ = self.model(x)
-        if self.activations is None: return None
-        maps = torch.relu(self.activations[0])
-        cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
-        for i in range(min(max_maps, maps.shape[0])):
-            m = maps[i]
-            mmin, mmax = m.min(), m.max()
-            if (mmax-mmin).abs()<1e-6: continue
-            m = (m-mmin)/(mmax-mmin+1e-8)
-            m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
-            m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
-            masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
-            with torch.no_grad():
-                out = self.model(masked)
-                score = float(torch.softmax(out,dim=1)[0,class_idx].item())
-            cam += score * m_up
-        if cam.max()<=0: return None
-        cam /= (cam.max()+1e-8)
+    def generate(self, x, class_idx, original_img=None):
+        self.model.zero_grad()
+        x = x.requires_grad_(True)
+        output = self.model(x)
+        score = output[0, class_idx]
+        score.backward()
+        if self.activations is None or self.gradients is None:
+            return None
+        weights = torch.mean(self.gradients, dim=[2,3], keepdim=True)
+        cam = torch.relu((weights * self.activations).sum(dim=1)).squeeze().cpu().numpy()
+        cam = cv2.resize(cam, (IMG_SIZE, IMG_SIZE))
+        cam = cam / (cam.max() + 1e-8)
         if original_img is not None:
-            orig = np.array(original_img.resize((IMG_SIZE,IMG_SIZE)))
-            mask = self.get_robust_mask(orig)
-            cam = cam * mask
-            if cam.max()>0: cam /= (cam.max()+1e-8)
-        cam = np.clip(cam, 0.55, 1.0)
-        cam = cv2.GaussianBlur(cam, (9,9), 0)
+            orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
+            gray = cv2.cvtColor(orig, cv2.COLOR_RGB2GRAY)
+            _, mask = cv2.threshold(gray, 18, 255, cv2.THRESH_BINARY)
+            mask = cv2.GaussianBlur(mask.astype(np.float32), (9,9), 0)
+            cam = cam * (mask / 255.0)
+            cam = cam / (cam.max() + 1e-8) if cam.max() > 0 else cam
+        cam = cv2.GaussianBlur(cam, (5,5), 0)
         return cam
-        
+
 def download_if_missing(file_id: str, out_path: str, desc: str):
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024: return True
     url = f"https://drive.google.com/uc?id={file_id}"
@@ -206,29 +184,30 @@ def overlay_boxes(image, boxes):
     sx = w / (IMG_SIZE*2)
     sy = h / (IMG_SIZE*2)
     for b in boxes:
-        x1,y1,x2,y2 = (int(v*s) for v,s in zip(b["xyxy"], [sx,sy,sx,sy]))
-        cv2.rectangle(arr, (x1,y1), (x2,y2), (0,255,0), 3)
-        cv2.putText(arr, f"{b['conf']:.2f}", (x1, max(20,y1-8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+        x1,y1,x2,y2 = [int(v*s) for v,s in zip(b["xyxy"], [sx,sy,sx,sy])]
+        cv2.rectangle(arr, (x1,y1), (x2,y2), (0,0,255), 6)
+        label = f"POLYP {b['conf']:.1f}"
+        cv2.putText(arr, label, (x1, max(25,y1-12)), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 4)
+        cv2.putText(arr, label, (x1, max(25,y1-12)), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 2)
     return Image.fromarray(arr)
 
 st.markdown("""
 <style>
     .main {background: linear-gradient(180deg, #0f172a 0%, #1e2937 100%);}
-    h1 {color: #60a5fa; text-align: center; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; margin-bottom: 0;}
+    h1 {color: #60a5fa; text-align: center; font-family: 'Helvetica Neue', sans-serif; font-weight: 700;}
     .subtitle {text-align: center; color: #94a3b8; font-size: 1.1rem; margin-bottom: 2rem;}
     .card {background: #1e2937; padding: 24px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); border: 1px solid #334155;}
     .badge {padding: 12px 28px; border-radius: 50px; font-size: 1.6rem; font-weight: 700; display: inline-block; margin: 12px 0;}
     .img-container {border: 3px solid #334155; border-radius: 16px; overflow: hidden;}
     .section-header {color: #60a5fa; border-bottom: 2px solid #334155; padding-bottom: 8px;}
-    .severity {font-size: 1.3rem; font-weight: 600;}
 </style>
 """, unsafe_allow_html=True)
 
 st.title("Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders")
-st.markdown('<p class="subtitle">EFFResNetViT • Score-CAM • Ordinal Severity • YOLO Polyp Detection</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">EFFResNetViT • Grad-CAM • Ordinal Severity • YOLO Polyp Detection</p>', unsafe_allow_html=True)
 
 st.sidebar.header("Configuration")
-show_scorecam = st.sidebar.checkbox("Enable Score-CAM", value=True)
+show_gradcam = st.sidebar.checkbox("Show Grad-CAM", value=True)
 conf_threshold = st.sidebar.slider("YOLO Confidence", 0.05, 0.95, 0.25, 0.01)
 st.sidebar.markdown("### Model Status")
 
@@ -252,90 +231,63 @@ if uploaded:
     for idx, f in enumerate(uploaded):
         img = Image.open(f).convert("RGB")
         col1, col2 = st.columns([1, 1.1])
-        
         with col1:
             st.markdown('<div class="img-container">', unsafe_allow_html=True)
             st.image(img, caption=f"Image {idx+1}", width=DISPLAY_WIDTH)
             st.markdown('</div>', unsafe_allow_html=True)
-        
         with col2:
             st.markdown('<div class="card">', unsafe_allow_html=True)
             if not classification_model:
                 st.error("Classifier not loaded")
                 st.markdown('</div>', unsafe_allow_html=True)
                 continue
-            
             pred, conf, x = predict_class(classification_model, img)
             color = CLASS_COLORS[pred]
             name = CLASS_NAMES[pred]
-            
             st.markdown(f'<div class="badge" style="background:{color};color:white;">{name}</div>', unsafe_allow_html=True)
             st.progress(conf, text=f"Confidence: {conf*100:.1f}%")
-            
-            # Polyp detection
             if pred == 2:
                 if yolo_loader[0] == "ultralytics":
                     boxes = run_yolo(yolo_loader, img, conf_threshold)
                     if boxes:
                         over = overlay_boxes(img, boxes)
+                        st.markdown(f'<div style="font-size:1.8rem;font-weight:700;color:#ef4444;">✅ Detected {len(boxes)} polyp{"s" if len(boxes)>1 else ""}</div>', unsafe_allow_html=True)
                         st.image(over, caption="YOLO Polyp Detections", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         over.save(tmp.name)
-                        st.download_button("📥 Download Detections", open(tmp.name,"rb"), f"detections_{idx+1}.png", key=f"download_detections_{idx}")
+                        st.download_button("📥 Download Detections", open(tmp.name,"rb"), f"detections_{idx+1}.png", key=f"dlp_{idx}")
                     else:
-                        st.info("No polyps detected")
+                        st.warning("⚠️ Classifier says Polyp but YOLO found none")
                 else:
                     st.info("YOLO unavailable")
-            
-            # UC severity
             if pred == 1 and ordinal_model:
                 label, _ = predict_ordinal(ordinal_model, img)
                 severity_text = ["Remission", "Mild", "Moderate", "Severe"][label]
                 severity_color = ["#22c55e", "#eab308", "#f97316", "#ef4444"][label]
-                st.markdown(f'<div class="severity" style="color:{severity_color};">Severity: {severity_text} ({label}/3)</div>', unsafe_allow_html=True)
-            
+                st.markdown(f'<div style="font-size:1.3rem;font-weight:600;color:{severity_color};">Severity: {severity_text} ({label}/3)</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Score-CAM
-            if show_scorecam and classification_model:
+            # Grad-CAM
+            if show_gradcam and classification_model:
                 try:
-                    sc = ScoreCAM(classification_model, classification_model.fusion)
-                    cam = sc.generate(x, pred, original_img=img)
+                    gc = GradCAM(classification_model, classification_model.fusion)
+                    cam = gc.generate(x, pred, original_img=img)
                     if cam is not None:
                         heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_TURBO)
                         heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
                         img_res = np.array(img.resize((IMG_SIZE,IMG_SIZE))).astype("uint8")
                         overlay = np.uint8(0.65 * img_res + 0.35 * heat)
-            
-                        st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability (Notebook Quality)</p>', unsafe_allow_html=True)
-                        st.image(heat, caption="Score-CAM Heatmap", width=DISPLAY_WIDTH)
+                        st.markdown('<div class="card"><p class="section-header">Grad-CAM Explainability</p>', unsafe_allow_html=True)
+                        st.image(heat, caption="Grad-CAM Heatmap", width=DISPLAY_WIDTH)
                         st.image(overlay, caption="Overlay", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         Image.fromarray(overlay).save(tmp.name)
-                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"sc_{idx}")
+                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"gradcam_{idx+1}.png", key=f"gc_{idx}")
                         st.markdown('</div>', unsafe_allow_html=True)
-                except Exception as e:
-                    st.warning(f"Score-CAM: {str(e)[:80]}")
-        
+                except:
+                    pass
         progress.progress((idx+1)/len(uploaded))
     progress.empty()
-
 else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
