@@ -82,7 +82,6 @@ transform = transforms.Compose([
     transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
 ])
 
-# Replace your entire ScoreCAM class with this (tailored for EFFResNetViT)
 class ScoreCAM:
     def __init__(self, model, target_layer):
         self.model = model
@@ -93,7 +92,25 @@ class ScoreCAM:
     def _hook(self, module, inp, out):
         self.activations = out.detach()
 
-    def generate(self, x, class_idx, original_img=None, max_maps=8):
+    def get_robust_mask(self, img):
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (11,11), 0)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = np.ones((15,15), np.uint8)
+        mask = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        h,w = gray.shape
+        final = np.zeros((h,w), dtype=np.uint8)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            cv2.drawContours(final, [largest], -1, 255, -1)
+        else:
+            cv2.circle(final, (w//2, h//2), int(min(w,h)*0.45), 255, -1)
+        final = cv2.GaussianBlur(final, (25,25), 0)
+        return final.astype(np.float32)/255.0
+
+    def generate(self, x, class_idx, original_img=None, max_maps=6):
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
@@ -114,21 +131,13 @@ class ScoreCAM:
             cam += score * m_up
         if cam.max()<=0: return None
         cam /= (cam.max()+1e-8)
-
         if original_img is not None:
-            arr = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
-            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-            mask = (gray > 18).astype(np.float32)
-            mask = cv2.GaussianBlur(mask, (9,9), 0)
-            cam *= mask
-
-            h, w = cam.shape
-            y, xgrid = np.ogrid[:h, :w]
-            center_dist = np.sqrt((xgrid-w/2)**2 + (y-h/2)**2)
-            center_dist /= center_dist.max()
-            cam *= (1 - 0.25*center_dist)
-
-        cam = cam / (cam.max() + 1e-8)
+            orig = np.array(original_img.resize((IMG_SIZE,IMG_SIZE)))
+            mask = self.get_robust_mask(orig)
+            cam = cam * mask
+            if cam.max()>0: cam /= (cam.max()+1e-8)
+        cam = np.clip(cam, 0.55, 1.0)
+        cam = cv2.GaussianBlur(cam, (9,9), 0)
         return cam
         
 def download_if_missing(file_id: str, out_path: str, desc: str):
@@ -315,6 +324,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
