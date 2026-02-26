@@ -82,6 +82,7 @@ transform = transforms.Compose([
     transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
 ])
 
+# Replace your entire ScoreCAM class with this:
 class ScoreCAM:
     def __init__(self, model, target_layer):
         self.model = model
@@ -102,28 +103,34 @@ class ScoreCAM:
         for i in range(min(max_maps, maps.shape[0])):
             m = maps[i]
             mmin, mmax = m.min(), m.max()
-            if (mmax - mmin).abs() < 1e-6: continue
-            m = (m - mmin) / (mmax - mmin + 1e-8)
+            if (mmax-mmin).abs()<1e-6: continue
+            m = (m-mmin)/(mmax-mmin+1e-8)
             m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
             m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
             masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
             with torch.no_grad():
                 out = self.model(masked)
-                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
+                score = float(torch.softmax(out,dim=1)[0,class_idx].item())
             cam += score * m_up
-        if cam.max() <= 0: return None
-        cam /= (cam.max() + 1e-8)
+        if cam.max()<=0: return None
+        cam /= (cam.max()+1e-8)
+
+        # ---------- AUTO BLACK BORDER CROP + FOREGROUND MASK ----------
         if original_img is not None:
-            orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
-            h, w = orig.shape[:2]
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.circle(mask, (w//2, h//2), int(min(w,h)*0.46), 255, -1)
-            mask = cv2.GaussianBlur(mask, (21,21), 0)
-            cam = cam * (mask.astype(np.float32)/255.0)
-            if cam.max() > 0: cam /= (cam.max() + 1e-8)
-        cam = np.clip(cam, 0.4, 1.0)
-        if cam.max() > 0: cam /= cam.max()
-        cam = cv2.GaussianBlur(cam, (7,7), 0)
+            img_np = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+            mask = (gray > 18).astype(np.float32)
+            mask = cv2.GaussianBlur(mask, (9,9), 0)
+            cam = cam * mask
+
+            # ---------- MEDICAL CENTER BIAS ----------
+            h, w = cam.shape
+            y, xgrid = np.ogrid[:h, :w]
+            center_dist = np.sqrt((xgrid - w/2)**2 + (y - h/2)**2)
+            center_dist = center_dist / center_dist.max()
+            cam = cam * (1 - 0.25*center_dist)
+
+        cam = cam / (cam.max() + 1e-8)
         return cam
         
 def download_if_missing(file_id: str, out_path: str, desc: str):
@@ -285,25 +292,23 @@ if uploaded:
             # Score-CAM
             if show_scorecam and classification_model:
                 try:
-                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])  # safe layer
+                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])
                     cam = sc.generate(x, pred, original_img=img)
                     if cam is not None:
                         heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_TURBO)
                         heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
-                        img_res = np.array(img.resize((IMG_SIZE, IMG_SIZE))).astype("uint8")
-                        overlay = (0.6 * img_res + 0.4 * heat).astype("uint8")
-                        
-                        st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability</p>', unsafe_allow_html=True)
-                        st.image(heat, caption="Heatmap", width=DISPLAY_WIDTH)
+                        img_res = np.array(img.resize((IMG_SIZE,IMG_SIZE))).astype("uint8")
+                        overlay = np.uint8(0.65 * img_res + 0.35 * heat)
+            
+                        st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability (Improved)</p>', unsafe_allow_html=True)
+                        st.image(heat, caption="Score-CAM Heatmap", width=DISPLAY_WIDTH)
                         st.image(overlay, caption="Overlay", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         Image.fromarray(overlay).save(tmp.name)
                         st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"sc_{idx}")
                         st.markdown('</div>', unsafe_allow_html=True)
-                    else:
-                        st.info("Score-CAM: no activations")
-                except Exception as e:
-                    st.warning(f"Score-CAM skipped ({str(e)[:60]})")
+                except:
+                    pass
         
         progress.progress((idx+1)/len(uploaded))
     progress.empty()
@@ -312,6 +317,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
