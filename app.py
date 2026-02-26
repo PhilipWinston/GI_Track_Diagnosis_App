@@ -413,13 +413,35 @@ def predict_class(model, pil_img):
 
 
 def predict_ordinal(ordinal_model, pil_img):
-    """Predict ordinal severity"""
+    """Predict ordinal severity using cumulative link model"""
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         logits = ordinal_model(x)
-        probs = torch.sigmoid(logits)[0].cpu().numpy()
-        label = int((probs > 0.5).sum())
-    return label, probs
+        # Cumulative probabilities for ordinal regression
+        # These represent P(Y > threshold_k)
+        cumulative_probs = torch.sigmoid(logits)[0].cpu().numpy()
+        
+        # Convert cumulative probabilities to individual class probabilities
+        # For ordinal regression with 4 classes (0,1,2,3), we have 3 thresholds
+        # P(Y=0) = 1 - P(Y>0) = 1 - cumulative_probs[0]
+        # P(Y=1) = P(Y>0) - P(Y>1) = cumulative_probs[0] - cumulative_probs[1]
+        # P(Y=2) = P(Y>1) - P(Y>2) = cumulative_probs[1] - cumulative_probs[2]
+        # P(Y=3) = P(Y>2) = cumulative_probs[2]
+        
+        individual_probs = np.zeros(4)
+        individual_probs[0] = 1.0 - cumulative_probs[0]  # Remission (class 0)
+        individual_probs[1] = cumulative_probs[0] - cumulative_probs[1]  # Mild (class 1)
+        individual_probs[2] = cumulative_probs[1] - cumulative_probs[2]  # Moderate (class 2)
+        individual_probs[3] = cumulative_probs[2]  # Severe (class 3)
+        
+        # Ensure probabilities are non-negative and sum to 1
+        individual_probs = np.clip(individual_probs, 0, 1)
+        individual_probs = individual_probs / individual_probs.sum()
+        
+        # Predicted class is the one with highest probability
+        label = int(np.argmax(individual_probs))
+        
+    return label, individual_probs
 
 
 def run_yolo(yolo_loader, src_image, conf=0.25):
@@ -745,21 +767,36 @@ if uploaded:
             
             with severity_col1:
                 st.markdown(f"""
-                <div style="text-align: center; padding: 1rem;">
+                <div style="text-align: center; padding: 1.5rem;">
                     <div class="severity-badge" style="background-color: {severity_colors[label]};">
                         {severity_names[label]}
                     </div>
-                    <div style="margin-top: 1rem; font-size: 1.1rem; color: #6b7280;">
-                        Severity Grade: <strong>{label}/3</strong>
+                    <div style="margin-top: 1.5rem; font-size: 1.2rem; color: #1f2937; font-weight: 600;">
+                        Severity Grade: <strong style="color: {severity_colors[label]};">{label}/3</strong>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
             
             with severity_col2:
-                st.markdown("**Ordinal Probabilities:**")
-                for i, p in enumerate(probs):
-                    st.write(f"Stage {i+1}: {p*100:.2f}%")
+                st.markdown('<div class="info-box">', unsafe_allow_html=True)
+                st.markdown('<div class="info-box-title">Severity Class Probabilities</div>', unsafe_allow_html=True)
+                
+                for i, (p, name) in enumerate(zip(probs, severity_names)):
+                    # Add checkmark to predicted class
+                    prefix = "✓ " if i == label else "   "
+                    st.markdown(f"""
+                    <div style="margin: 0.75rem 0;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                            <span style="font-weight: {'700' if i == label else '600'}; color: {'#1f2937' if i == label else '#6b7280'};">
+                                {prefix}{name} (Grade {i})
+                            </span>
+                            <span style="font-weight: 700; color: {severity_colors[i]};">{p*100:.2f}%</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
                     st.progress(float(p))
+                
+                st.markdown('</div>', unsafe_allow_html=True)
         
         # Separator between images
         if idx < len(uploaded) - 1:
