@@ -92,27 +92,7 @@ class ScoreCAM:
     def _hook(self, module, inp, out):
         self.activations = out.detach()
 
-    def get_strong_mask(self, img):
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (15,15), 0)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        h, w = gray.shape
-        mask = np.zeros((h, w), dtype=np.uint8)
-        if contours:
-            largest = max(contours, key=cv2.contourArea)
-            if len(largest) >= 5:
-                ellipse = cv2.fitEllipse(largest)
-                cv2.ellipse(mask, ellipse, 255, -1)
-            else:
-                cv2.drawContours(mask, [largest], -1, 255, -1)
-        else:
-            cv2.ellipse(mask, (w//2, h//2), (int(w*0.44), int(h*0.44)), 0, 0, 360, 255, -1)
-        mask = cv2.erode(mask, np.ones((21,21), np.uint8), iterations=3)
-        mask = cv2.GaussianBlur(mask, (31,31), 0)
-        return mask.astype(np.float32) / 255.0
-
-    def generate(self, x, class_idx, original_img=None, max_maps=6):
+    def generate(self, x, class_idx, original_img=None, max_maps=8):
         self.model.eval()
         with torch.no_grad():
             _ = self.model(x)
@@ -122,25 +102,28 @@ class ScoreCAM:
         for i in range(min(max_maps, maps.shape[0])):
             m = maps[i]
             mmin, mmax = m.min(), m.max()
-            if (mmax-mmin).abs() < 1e-6: continue
-            m = (m-mmin)/(mmax-mmin+1e-8)
+            if (mmax - mmin).abs() < 1e-6: continue
+            m = (m - mmin) / (mmax - mmin + 1e-8)
             m_up = cv2.resize(m.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
             m_tensor = torch.from_numpy(m_up).float().to(DEVICE)
             masked = x * m_tensor.unsqueeze(0).unsqueeze(0)
             with torch.no_grad():
                 out = self.model(masked)
-                score = float(torch.softmax(out,dim=1)[0,class_idx].item())
+                score = float(torch.softmax(out, dim=1)[0, class_idx].item())
             cam += score * m_up
         if cam.max() <= 0: return None
-        cam /= (cam.max()+1e-8)
+        cam /= (cam.max() + 1e-8)
         if original_img is not None:
-            orig = np.array(original_img.resize((IMG_SIZE,IMG_SIZE)))
-            mask = self.get_strong_mask(orig)
-            cam = cam * mask
-            if cam.max() > 0: cam /= (cam.max()+1e-8)
-        cam = np.clip(cam, 0.55, 1.0)          # aggressive noise removal
+            orig = np.array(original_img.resize((IMG_SIZE, IMG_SIZE)))
+            h, w = orig.shape[:2]
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.circle(mask, (w//2, h//2), int(min(w,h)*0.46), 255, -1)
+            mask = cv2.GaussianBlur(mask, (21,21), 0)
+            cam = cam * (mask.astype(np.float32)/255.0)
+            if cam.max() > 0: cam /= (cam.max() + 1e-8)
+        cam = np.clip(cam, 0.4, 1.0)
         if cam.max() > 0: cam /= cam.max()
-        cam = cv2.GaussianBlur(cam, (11,11), 0)
+        cam = cv2.GaussianBlur(cam, (7,7), 0)
         return cam
         
 def download_if_missing(file_id: str, out_path: str, desc: str):
@@ -302,23 +285,25 @@ if uploaded:
             # Score-CAM
             if show_scorecam and classification_model:
                 try:
-                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])
-                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[-1])  # deepest layer
+                    sc = ScoreCAM(classification_model, classification_model.eff.blocks[4])  # safe layer
+                    cam = sc.generate(x, pred, original_img=img)
                     if cam is not None:
                         heat = cv2.applyColorMap((cam*255).astype("uint8"), cv2.COLORMAP_TURBO)
                         heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
-                        img_res = np.array(img.resize((IMG_SIZE,IMG_SIZE))).astype("uint8")
-                        overlay = (0.6*img_res + 0.4*heat).astype("uint8")
+                        img_res = np.array(img.resize((IMG_SIZE, IMG_SIZE))).astype("uint8")
+                        overlay = (0.6 * img_res + 0.4 * heat).astype("uint8")
                         
                         st.markdown('<div class="card"><p class="section-header">Score-CAM Explainability</p>', unsafe_allow_html=True)
                         st.image(heat, caption="Heatmap", width=DISPLAY_WIDTH)
                         st.image(overlay, caption="Overlay", width=DISPLAY_WIDTH)
                         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                         Image.fromarray(overlay).save(tmp.name)
-                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"download_scorecam_{idx}")
+                        st.download_button("📥 Download Overlay", open(tmp.name,"rb"), f"scorecam_{idx+1}.png", key=f"sc_{idx}")
                         st.markdown('</div>', unsafe_allow_html=True)
-                except:
-                    pass
+                    else:
+                        st.info("Score-CAM: no activations")
+                except Exception as e:
+                    st.warning(f"Score-CAM skipped ({str(e)[:60]})")
         
         progress.progress((idx+1)/len(uploaded))
     progress.empty()
@@ -327,6 +312,7 @@ else:
     st.info("👆 Upload images to begin analysis")
 
 st.caption("© 2026 Deep Learning Framework for Explainable Diagnosis of GI Tract Disorders • Models from provided Google Drive")
+
 
 
 
