@@ -71,15 +71,21 @@ MODEL_PATHS = {
 # ============================================================================
 st.markdown("""
 <style>
+    /* Remove default padding */
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 0rem;
+    }
+    
     /* Main styling */
     .main {
-        padding: 2rem;
+        padding: 0;
     }
     
     /* Header styling */
     .main-header {
         text-align: center;
-        padding: 2rem 0;
+        padding: 2rem 1rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border-radius: 15px;
         margin-bottom: 2rem;
@@ -97,6 +103,7 @@ st.markdown("""
         font-size: 1.1rem;
         opacity: 0.95;
         margin: 0;
+        color: white;
     }
     
     /* Card styling */
@@ -112,10 +119,11 @@ st.markdown("""
     .image-card {
         background: white;
         border-radius: 12px;
-        padding: 1rem;
+        padding: 0.75rem;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
         border: 1px solid #e5e7eb;
         text-align: center;
+        margin-bottom: 0.5rem;
     }
     
     /* Prediction badge */
@@ -127,6 +135,7 @@ st.markdown("""
         font-weight: 600;
         margin: 1rem 0;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        color: white !important;
     }
     
     /* Confidence bar */
@@ -149,21 +158,31 @@ st.markdown("""
         font-size: 1.1rem;
         font-weight: 600;
         margin: 0.5rem 0;
-        color: white;
+        color: white !important;
     }
     
     /* Detection info */
     .detection-info {
-        background: #f0f9ff;
+        background: #dbeafe;
         border-left: 4px solid #3b82f6;
         padding: 1rem;
         border-radius: 8px;
         margin: 1rem 0;
+        color: #1e40af !important;
+    }
+    
+    .detection-info strong {
+        color: #1e3a8a !important;
     }
     
     .detection-info-warning {
-        background: #fffbeb;
+        background: #fef3c7;
         border-left: 4px solid #f59e0b;
+        color: #92400e !important;
+    }
+    
+    .detection-info-warning strong {
+        color: #78350f !important;
     }
     
     /* Info boxes */
@@ -244,6 +263,46 @@ st.markdown("""
         font-size: 0.9rem;
         margin-top: 3rem;
         border-top: 1px solid #e5e7eb;
+    }
+    
+    /* Remove extra padding and margins */
+    .element-container {
+        margin-bottom: 0 !important;
+    }
+    
+    /* Remove white space from images */
+    .stImage {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+    
+    .stImage > img {
+        display: block !important;
+    }
+    
+    /* Compact file uploader */
+    [data-testid="stFileUploader"] {
+        padding: 0.5rem 0;
+    }
+    
+    /* Remove extra space in columns */
+    [data-testid="column"] {
+        padding: 0.25rem !important;
+    }
+    
+    /* Remove gaps */
+    .row-widget {
+        gap: 0.5rem !important;
+    }
+    
+    /* Ensure text is visible */
+    h1, h2, h3, h4, h5, h6, p, span, div {
+        color: inherit !important;
+    }
+    
+    /* Remove space between image card and image */
+    div[data-testid="stVerticalBlock"] > div {
+        gap: 0 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -416,21 +475,27 @@ def run_yolo(yolo_loader, src_image, conf=0.25):
 
 
 def overlay_boxes_high_quality(image, boxes):
-    """Overlay detection boxes with high quality rendering"""
+    """Overlay detection boxes with high quality rendering - optimized for visibility"""
     # Work with original image resolution
     img_pil = image.convert("RGB")
-    draw = ImageDraw.Draw(img_pil)
-    
-    # Try to load a nice font, fall back to default
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
-    except:
-        font = ImageFont.load_default()
+    w, h = img_pil.size
     
     # Scale factors from detection resolution (640x640) to original
-    w, h = img_pil.size
     sx = w / 640
     sy = h / 640
+    
+    # Create drawing context
+    draw = ImageDraw.Draw(img_pil)
+    
+    # Calculate appropriate font size based on image dimensions - reduced for better fit
+    font_size = max(10, min(w, h) // 50)  # Smaller font size
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+    except:
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+        except:
+            font = ImageFont.load_default()
     
     for idx, b in enumerate(boxes):
         x1, y1, x2, y2 = b["xyxy"]
@@ -441,44 +506,61 @@ def overlay_boxes_high_quality(image, boxes):
         x2 = int(x2 * sx)
         y2 = int(y2 * sy)
         
-        # Draw semi-transparent fill
-        overlay = Image.new('RGBA', img_pil.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        overlay_draw.rectangle([x1, y1, x2, y2], fill=(59, 130, 246, 40))
-        img_pil = Image.alpha_composite(img_pil.convert('RGBA'), overlay).convert('RGB')
-        draw = ImageDraw.Draw(img_pil)
+        # Ensure coordinates are within image bounds
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w - 1))
+        y2 = max(0, min(y2, h - 1))
         
-        # Draw thick border
-        line_width = max(3, int(min(w, h) * 0.005))
+        # Calculate appropriate line width
+        line_width = max(2, int(min(w, h) * 0.003))
+        
+        # Draw the main bounding box with thick lines
         for offset in range(line_width):
             draw.rectangle(
-                [x1 - offset, y1 - offset, x2 + offset, y2 + offset],
-                outline=(59, 130, 246),
+                [x1 + offset, y1 + offset, x2 - offset, y2 - offset],
+                outline=(0, 255, 0),
                 width=1
             )
         
-        # Draw label background
-        label_text = f"Polyp #{idx + 1} ({b['conf']*100:.1f}%)"
+        # Prepare label with shorter text
+        label_text = f"#{idx + 1} {b['conf']*100:.0f}%"  # Shorter label
         
-        # Get text size
+        # Get text bounding box
         bbox = draw.textbbox((0, 0), label_text, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        label_y = y1 - text_height - 10 if y1 - text_height - 10 > 0 else y2 + 5
+        # Calculate label position - ensure it stays within image bounds
+        padding = max(3, font_size // 5)  # Smaller padding
+        label_width = text_width + 2 * padding
+        label_height = text_height + 2 * padding
         
-        # Draw label background with padding
-        padding = 8
+        # Try to place label above the box, if not enough space, place it below
+        if y1 - label_height - 3 >= 0:
+            label_y = y1 - label_height - 3
+        elif y2 + label_height + 3 <= h:
+            label_y = y2 + 3
+        else:
+            # Place inside the box at the top
+            label_y = y1 + 3
+        
+        # Ensure label doesn't exceed image width
+        label_x = x1
+        if label_x + label_width > w:
+            label_x = max(0, w - label_width - 3)
+        
+        # Draw label background
         draw.rectangle(
-            [x1, label_y - padding, x1 + text_width + 2*padding, label_y + text_height + padding],
-            fill=(59, 130, 246),
-            outline=(37, 99, 235),
-            width=2
+            [label_x, label_y, label_x + label_width, label_y + label_height],
+            fill=(0, 200, 0),
+            outline=(0, 150, 0),
+            width=1
         )
         
         # Draw text
         draw.text(
-            (x1 + padding, label_y),
+            (label_x + padding, label_y + padding),
             label_text,
             fill=(255, 255, 255),
             font=font
@@ -583,7 +665,7 @@ if uploaded:
         with col1:
             st.markdown(f"""
             <div class="image-card">
-                <h3 style="margin-top: 0; color: #374151;">📷 Image {idx+1}</h3>
+                <h3 style="margin: 0 0 0.5rem 0; color: #374151;">📷 Image {idx+1}</h3>
             </div>
             """, unsafe_allow_html=True)
             st.image(img, use_container_width=True)
@@ -639,8 +721,12 @@ if uploaded:
                 with detection_col1:
                     st.markdown(f"""
                     <div class="detection-info">
-                        <strong>✓ {len(boxes)} Polyp(s) Detected</strong><br>
-                        <small>Confidence threshold: {conf_threshold*100:.0f}%</small>
+                        <div style="font-size: 1.1rem; font-weight: 600; color: #1e3a8a; margin-bottom: 0.5rem;">
+                            ✓ {len(boxes)} Polyp(s) Detected
+                        </div>
+                        <div style="font-size: 0.9rem; color: #1e40af;">
+                            Confidence threshold: {conf_threshold*100:.0f}%
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
                     
