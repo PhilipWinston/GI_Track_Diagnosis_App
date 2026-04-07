@@ -128,7 +128,7 @@ class ResEffFusionClassifier(nn.Module):
 
         self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
         eff_dim  = self.eff.feature_info[-1]["num_chs"]
-        self.res = timm.create_model("resnet50",        pretrained=False, features_only=True)
+        self.res = timm.create_model("resnet50", pretrained=False, features_only=True)
         res_dim  = self.res.feature_info[-1]["num_chs"]
 
         self.eff_proj   = nn.Conv2d(eff_dim, 1024, 1)
@@ -149,16 +149,20 @@ class ResEffFusionClassifier(nn.Module):
 
 
 class ResEffFusionOrdinal(nn.Module):
-    """CORAL ordinal severity — outputs K-1 logits for Mayo 0-3"""
-    def __init__(self, num_classes=4, eff_weight=0.75):
+    """
+    Ordinal model loader that can handle BOTH:
+    - CORAL/K-1 checkpoints (3 outputs for 4 grades)
+    - plain 4-output checkpoints
+    """
+    def __init__(self, num_classes=4, head_out_features=None, eff_weight=0.75):
         super().__init__()
         self.num_classes = num_classes
-        self.eff_weight  = eff_weight
-        self.res_weight  = 1 - eff_weight
+        self.eff_weight   = eff_weight
+        self.res_weight   = 1 - eff_weight
 
         self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
         eff_dim  = self.eff.feature_info[-1]["num_chs"]
-        self.res = timm.create_model("resnet50",        pretrained=False, features_only=True)
+        self.res = timm.create_model("resnet50", pretrained=False, features_only=True)
         res_dim  = self.res.feature_info[-1]["num_chs"]
 
         self.eff_proj   = nn.Conv2d(eff_dim, 1024, 1)
@@ -166,7 +170,9 @@ class ResEffFusionOrdinal(nn.Module):
         self.bn         = nn.BatchNorm2d(1024)
         self.relu       = nn.ReLU(inplace=False)
         self.pool       = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Linear(1024, num_classes - 1)   # CORAL head
+
+        out_features = head_out_features if head_out_features is not None else (num_classes - 1)
+        self.classifier = nn.Linear(1024, out_features)
 
     def forward(self, x):
         eff = self.eff(x)[-1]
@@ -179,12 +185,39 @@ class ResEffFusionOrdinal(nn.Module):
 
 
 # ============================================================================
+# CHECKPOINT HELPERS
+# ============================================================================
+
+def _extract_state_dict(ckpt_obj):
+    """Supports plain state_dict or wrapped checkpoints."""
+    if isinstance(ckpt_obj, dict):
+        for key in ("state_dict", "model_state_dict", "model"):
+            if key in ckpt_obj and isinstance(ckpt_obj[key], dict):
+                ckpt_obj = ckpt_obj[key]
+                break
+
+    if not isinstance(ckpt_obj, dict):
+        raise ValueError("Unsupported checkpoint format")
+
+    cleaned = {}
+    for k, v in ckpt_obj.items():
+        cleaned[k.replace("module.", "")] = v
+    return cleaned
+
+
+def _infer_head_out_features(state_dict: dict, default: int = 3) -> int:
+    if "classifier.weight" in state_dict and hasattr(state_dict["classifier.weight"], "shape"):
+        return int(state_dict["classifier.weight"].shape[0])
+    return default
+
+
+# ============================================================================
 # CORAL UTILITY
 # ============================================================================
 
 def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
     """CORAL K-1 logits → K class probabilities (numpy float32, shape [K])."""
-    sig = torch.sigmoid(logits)          # (1, K-1)
+    sig = torch.sigmoid(logits)
     K   = logits.size(1) + 1
 
     parts = [(1 - sig[:, 0]).unsqueeze(1)]
@@ -199,15 +232,13 @@ def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
 
 # ============================================================================
 # GRADCAM++  — pure PyTorch + Pillow, zero cv2
-# Sourced from the ordinal (doc-2) and classifier (doc-3) GradCAM++ scripts,
-# unified into one class that handles both model types.
 # ============================================================================
 
 class GradCAMpp:
     """
     GradCAM++ hooked on `target_layer` (use model.bn for ResEffFusion).
-    - is_ordinal=False  →  softmax score (classifier model, doc-3 logic)
-    - is_ordinal=True   →  CORAL per-class score  (ordinal model, doc-2 logic)
+    - is_ordinal=False  →  softmax score (classifier model)
+    - is_ordinal=True   →  CORAL per-class score if 3 outputs, softmax if 4 outputs
     """
     def __init__(self, model: nn.Module, target_layer: nn.Module, is_ordinal: bool = False):
         self.model      = model
@@ -217,8 +248,11 @@ class GradCAMpp:
         target_layer.register_forward_hook(self._fwd)
         target_layer.register_full_backward_hook(self._bwd)
 
-    def _fwd(self, _m, _i, out):    self._acts  = out
-    def _bwd(self, _m, _i, grad_o): self._grads = grad_o[0]
+    def _fwd(self, _m, _i, out):
+        self._acts = out
+
+    def _bwd(self, _m, _i, grad_o):
+        self._grads = grad_o[0]
 
     @torch.enable_grad()
     def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
@@ -226,43 +260,42 @@ class GradCAMpp:
         logits = self.model(input_tensor)
 
         if self.is_ordinal:
-            # doc-2 approach: backprop through the CORAL class probability
-            sig = torch.sigmoid(logits)          # (1, K-1)
-            K   = logits.size(1) + 1
-            if target_class == 0:
-                score = 1 - sig[:, 0]
-            elif target_class == K - 1:
-                score = sig[:, K - 2]
+            if logits.size(1) == 3:
+                sig = torch.sigmoid(logits)
+                K   = logits.size(1) + 1
+                if target_class == 0:
+                    score = 1 - sig[:, 0]
+                elif target_class == K - 1:
+                    score = sig[:, K - 2]
+                else:
+                    score = sig[:, target_class - 1] - sig[:, target_class]
             else:
-                score = sig[:, target_class - 1] - sig[:, target_class]
+                score = torch.softmax(logits, dim=1)[:, target_class]
         else:
-            # doc-3 approach: backprop through softmax class probability
             score = torch.softmax(logits, dim=1)[:, target_class]
 
         score.sum().backward(retain_graph=False)
 
-        acts  = self._acts    # (1, C, H, W)
-        grads = self._grads   # (1, C, H, W)
+        acts  = self._acts
+        grads = self._grads
 
-        # GradCAM++ weight computation (identical in both source scripts)
         g2      = grads ** 2
         g3      = grads ** 3
         sum_act = acts.sum(dim=(2, 3), keepdim=True)
         alpha   = g2 / (2 * g2 + sum_act * g3 + 1e-8)
-        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))   # (1, C)
+        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))
 
-        cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))  # (1,H,W)
+        cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))
         cam = cam.squeeze().detach().cpu().numpy()
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
 
-        # Upsample to IMG_SIZE with Pillow (replaces cv2.resize)
         cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
         cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
         return np.array(cam_pil, dtype=np.float32) / 255.0
 
 
 # ============================================================================
-# COLOURMAP + OVERLAY  (replaces cv2.applyColorMap + cv2.addWeighted)
+# COLOURMAP + OVERLAY
 # ============================================================================
 
 def _jet_colormap(gray: np.ndarray) -> np.ndarray:
@@ -274,7 +307,7 @@ def _jet_colormap(gray: np.ndarray) -> np.ndarray:
 
 
 def make_gradcam_overlay(cam: np.ndarray, original_pil: Image.Image, alpha: float = 0.45) -> Image.Image:
-    """Blend JET heatmap with original → RGB PIL Image (replaces cv2.addWeighted)."""
+    """Blend JET heatmap with original → RGB PIL Image."""
     orig  = np.array(original_pil.resize((IMG_SIZE, IMG_SIZE)).convert("RGB"), dtype=np.float32)
     heat  = _jet_colormap(cam).astype(np.float32)
     blend = ((1 - alpha) * orig + alpha * heat).clip(0, 255).astype(np.uint8)
@@ -307,16 +340,23 @@ def download_if_missing(file_id: str, out_path: str, desc: str) -> bool:
 
 @st.cache_resource
 def load_classification_model(path: str):
+    ckpt = torch.load(path, map_location=DEVICE)
+    state_dict = _extract_state_dict(ckpt)
+
     m = ResEffFusionClassifier(num_classes=4).to(DEVICE)
-    m.load_state_dict(torch.load(path, map_location=DEVICE))
+    m.load_state_dict(state_dict)
     m.eval()
     return m
 
 
 @st.cache_resource
 def load_ordinal_model(path: str):
-    m = ResEffFusionOrdinal(num_classes=4).to(DEVICE)
-    m.load_state_dict(torch.load(path, map_location=DEVICE))
+    ckpt = torch.load(path, map_location=DEVICE)
+    state_dict = _extract_state_dict(ckpt)
+    head_out_features = _infer_head_out_features(state_dict, default=3)
+
+    m = ResEffFusionOrdinal(num_classes=4, head_out_features=head_out_features).to(DEVICE)
+    m.load_state_dict(state_dict)
     m.eval()
     return m
 
@@ -342,16 +382,23 @@ def predict_class(model, pil_img):
 def predict_ordinal(model, pil_img):
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        probs = coral_logits_to_probs(model(x))
+        logits = model(x)
+
+        if logits.size(1) == 3:
+            probs = coral_logits_to_probs(logits)
+        elif logits.size(1) == 4:
+            probs = torch.softmax(logits, dim=1).squeeze(0).detach().cpu().numpy()
+        else:
+            raise ValueError(f"Unexpected ordinal head size: {logits.size(1)}")
+
     probs = np.clip(probs, 0, 1)
-    probs /= probs.sum()
+    probs = probs / (probs.sum() + 1e-12)
     return int(np.argmax(probs)), probs
 
 
 def run_yolo(yolo_loader, src_image: Image.Image, conf: float = 0.25) -> list:
     if yolo_loader[0] != "ultralytics":
         return []
-    # Pure Pillow resize — no cv2
     img_np  = np.array(src_image.resize((640, 640)).convert("RGB"))
     results = yolo_loader[1].predict(source=img_np, conf=conf, verbose=False)
     return [
@@ -375,7 +422,6 @@ def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
     img  = image.convert("RGBA")
     w, h = img.size
 
-    # Separate layer for alpha compositing
     ovl   = Image.new("RGBA", img.size, (0, 0, 0, 0))
     drw_o = ImageDraw.Draw(ovl)
     drw   = ImageDraw.Draw(img)
@@ -413,29 +459,25 @@ def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
             continue
         cv = box["conf"]
 
-        # Interior tint
         drw_o.rectangle([x1, y1, x2, y2], fill=(0, 230, 100, 22))
 
-        # Box border
         for i in range(lw):
             drw.rectangle([x1+i, y1+i, x2-i, y2-i], outline=BOX_COL, width=1)
 
-        # Corner brackets
         cs = min(corner_sz, (x2-x1)//3, (y2-y1)//3)
         ct = max(2, lw + 1)
         for rx1, ry1, rx2, ry2 in [
-            (x1,    y1,    x1+cs, y1+ct),  # TL-H
-            (x1,    y1,    x1+ct, y1+cs),  # TL-V
-            (x2-cs, y1,    x2,    y1+ct),  # TR-H
-            (x2-ct, y1,    x2,    y1+cs),  # TR-V
-            (x1,    y2-ct, x1+cs, y2   ),  # BL-H
-            (x1,    y2-cs, x1+ct, y2   ),  # BL-V
-            (x2-cs, y2-ct, x2,    y2   ),  # BR-H
-            (x2-ct, y2-cs, x2,    y2   ),  # BR-V
+            (x1,    y1,    x1+cs, y1+ct),
+            (x1,    y1,    x1+ct, y1+cs),
+            (x2-cs, y1,    x2,    y1+ct),
+            (x2-ct, y1,    x2,    y1+cs),
+            (x1,    y2-ct, x1+cs, y2   ),
+            (x1,    y2-cs, x1+ct, y2   ),
+            (x2-cs, y2-ct, x2,    y2   ),
+            (x2-ct, y2-cs, x2,    y2   ),
         ]:
             drw.rectangle([rx1, ry1, rx2, ry2], fill=BRACKET)
 
-        # Label pill
         label  = f"  Polyp {idx+1}   {cv*100:.0f}%  "
         bb     = drw.textbbox((0, 0), label, font=font)
         tw, th = bb[2]-bb[0], bb[3]-bb[1]
@@ -455,7 +497,6 @@ def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
         drw_o.rectangle([px, py, px+pill_w, py+pill_h], fill=PILL_BG)
         drw.text((px+px_p, py+py_p), label, fill=PILL_FG, font=font)
 
-        # Confidence bar
         bar_y  = py + py_p + th + 4
         bx1    = px + px_p
         bx2    = px + pill_w - px_p
@@ -604,11 +645,11 @@ else:
 
             gc1, gc2, gc3 = st.columns(3)
             with gc1:
-                st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original",  use_container_width=True)
+                st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original", use_container_width=True)
             with gc2:
-                st.image(Image.fromarray(_jet_colormap(cam_map)), caption="Heatmap",   use_container_width=True)
+                st.image(Image.fromarray(_jet_colormap(cam_map)), caption="Heatmap", use_container_width=True)
             with gc3:
-                st.image(make_gradcam_overlay(cam_map, img),      caption="Overlay",   use_container_width=True)
+                st.image(make_gradcam_overlay(cam_map, img), caption="Overlay", use_container_width=True)
 
         # ── Polyp detection ────────────────────────────────────────────────
         if pred == 2 and yolo_loader[0] == "ultralytics":
@@ -684,7 +725,6 @@ else:
                     st.progress(float(p))
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            # GradCAM++ for ordinal model
             if show_gradcam:
                 st.markdown("#### 🧠 GradCAM++ — Severity Model Attention")
                 inp_ord    = transform(img).unsqueeze(0).to(DEVICE)
@@ -695,9 +735,9 @@ else:
                 with og1:
                     st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original", use_container_width=True)
                 with og2:
-                    st.image(Image.fromarray(_jet_colormap(cam_ord)), caption="Heatmap",  use_container_width=True)
+                    st.image(Image.fromarray(_jet_colormap(cam_ord)), caption="Heatmap", use_container_width=True)
                 with og3:
-                    st.image(make_gradcam_overlay(cam_ord, img),      caption="Overlay",  use_container_width=True)
+                    st.image(make_gradcam_overlay(cam_ord, img), caption="Overlay", use_container_width=True)
 
         if idx < len(uploaded) - 1:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
