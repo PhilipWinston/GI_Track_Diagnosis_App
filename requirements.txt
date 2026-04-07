@@ -1,10 +1,9 @@
+opencv-python-headless
+streamlit
+ultralytics
 torch
 torchvision
-streamlit
 timm
 numpy
-opencv-python-headless
 Pillow
 gdown
-ultralytics
-
