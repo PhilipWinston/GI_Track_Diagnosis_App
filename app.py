@@ -39,8 +39,8 @@ MODEL_DIR = "models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 DRIVE_IDS = {
-    "classifier": "1aZke_47izApUtev2-Jlr1j4ZC84DC1i1",
-    "ordinal":    "1Q74a7he0LnLfDJEN90YLpMhzJxI0wKa2",
+    "classifier": "1cvDPCfVBLWjCtx9mjz0KFWCwTwRs2atL",
+    "ordinal":    "1Hvng1F6upAUjfsZe_sLpTmmH8lia04TI",
     "polyp":      "1xzGUJ1d9qDQKiodCzbWVOH07gNsffWnS",
 }
 MODEL_PATHS = {
