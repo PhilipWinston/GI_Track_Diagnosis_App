@@ -70,9 +70,9 @@ MODEL_PATHS = {
 # Optional Google Drive IDs if you still want auto-download.
 # Leave as None if you only want local loading.
 DRIVE_IDS = {
-    "classifier": None,
-    "ordinal": None,
-    "polyp": None,
+    "classifier": "1aZke_47izApUtev2-Jlr1j4ZC84DC1i1",
+    "ordinal": "1Q74a7he0LnLfDJEN90YLpMhzJxI0wKa2",
+    "polyp": "1xzGUJ1d9qDQKiodCzbWVOH07gNsffWnS",
 }
 
 # ============================================================================
