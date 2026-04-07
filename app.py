@@ -1,6 +1,6 @@
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 import gdown
 import numpy as np
@@ -93,7 +93,7 @@ class ResEffFusion(nn.Module):
 
 
 # ============================================================================
-# UTILITIES
+# CHECKPOINT HELPERS
 # ============================================================================
 def safe_torch_load(path: str):
     try:
@@ -159,14 +159,18 @@ def load_torch_model(path: str, default_outputs: int):
 
 @st.cache_resource
 def load_yolo_model(path: str):
-    if not HAS_ULTRALYTICS:
-        return None
     try:
-        return YOLO(path)
-    except Exception:
+        from ultralytics import YOLO
+        model = YOLO(path)
+        return model
+    except Exception as e:
+        st.error(f"YOLO load error: {e}")
         return None
 
 
+# ============================================================================
+# PREDICTION
+# ============================================================================
 def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
     sig = torch.sigmoid(logits)
     k = logits.size(1) + 1
@@ -207,28 +211,34 @@ def run_yolo(yolo_model, image: Image.Image, conf: float):
     if yolo_model is None:
         return []
 
-    img_np = np.array(image.convert("RGB"))
-    results = yolo_model.predict(source=img_np, conf=conf, imgsz=640, verbose=False)
+    try:
+        img_np = np.array(image.convert("RGB"))
 
-    boxes = []
-    if not results:
-        return boxes
-
-    r0 = results[0]
-    if r0.boxes is None or len(r0.boxes) == 0:
-        return boxes
-
-    xyxy = r0.boxes.xyxy.cpu().numpy()
-    confs = r0.boxes.conf.cpu().numpy()
-
-    for i in range(len(xyxy)):
-        boxes.append(
-            {
-                "xyxy": xyxy[i],
-                "conf": float(confs[i]),
-            }
+        results = yolo_model.predict(
+            source=img_np,
+            conf=conf,
+            imgsz=640,
+            verbose=False,
         )
-    return boxes
+
+        boxes = []
+        if len(results) == 0:
+            return boxes
+
+        r = results[0]
+        if r.boxes is None or len(r.boxes) == 0:
+            return boxes
+
+        for b in r.boxes:
+            xyxy = b.xyxy[0].cpu().numpy()
+            conf_val = float(b.conf[0].cpu().numpy())
+            boxes.append({"xyxy": xyxy, "conf": conf_val})
+
+        return boxes
+
+    except Exception as e:
+        st.error(f"YOLO inference error: {e}")
+        return []
 
 
 def overlay_boxes(image: Image.Image, boxes: list):
@@ -243,26 +253,24 @@ def overlay_boxes(image: Image.Image, boxes: list):
 
         draw.rectangle([x1, y1, x2, y2], outline="lime", width=3)
         label = f"Polyp {i + 1}: {conf:.2f}"
+
         try:
             tb = draw.textbbox((x1, y1), label, font=font)
             draw.rectangle([tb[0] - 2, tb[1] - 2, tb[2] + 2, tb[3] + 2], fill="black")
         except Exception:
             pass
+
         draw.text((x1, max(0, y1 - 12)), label, fill="white", font=font)
 
     return img
 
 
 # ============================================================================
-# HEADER
+# UI
 # ============================================================================
 st.title("GI Tract Diagnosis System")
 st.caption("Simple working version for classification, UC severity, and polyp detection")
 
-
-# ============================================================================
-# SIDEBAR
-# ============================================================================
 st.sidebar.header("Settings")
 conf_threshold = st.sidebar.slider("YOLO confidence", 0.05, 0.95, 0.25, 0.05)
 show_details = st.sidebar.checkbox("Show probabilities", value=True)
@@ -290,24 +298,27 @@ yolo_model = None
 try:
     if dl_ok.get("classifier") and os.path.exists(MODEL_PATHS["classifier"]):
         classifier_model, _ = load_torch_model(MODEL_PATHS["classifier"], default_outputs=4)
-except Exception:
+except Exception as e:
+    st.sidebar.error(f"Classifier load error: {e}")
     classifier_model = None
 
 try:
     if dl_ok.get("ordinal") and os.path.exists(MODEL_PATHS["ordinal"]):
         ordinal_model, _ = load_torch_model(MODEL_PATHS["ordinal"], default_outputs=3)
-except Exception:
+except Exception as e:
+    st.sidebar.error(f"Ordinal load error: {e}")
     ordinal_model = None
 
 try:
-    if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]) and HAS_ULTRALYTICS:
+    if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]):
         yolo_model = load_yolo_model(MODEL_PATHS["polyp"])
-except Exception:
+except Exception as e:
+    st.sidebar.error(f"YOLO load error: {e}")
     yolo_model = None
 
 
 # ============================================================================
-# UPLOAD
+# UPLOADER
 # ============================================================================
 uploaded_files = st.file_uploader(
     "Upload colonoscopy image(s)",
@@ -321,7 +332,7 @@ if not uploaded_files:
 
 
 # ============================================================================
-# PROCESS IMAGES
+# PROCESS
 # ============================================================================
 for idx, f in enumerate(uploaded_files):
     image = Image.open(f).convert("RGB")
@@ -358,9 +369,9 @@ for idx, f in enumerate(uploaded_files):
                         det_img = overlay_boxes(image, boxes)
                         st.image(det_img, caption="YOLO detection", use_container_width=True)
 
-                        buf = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-                        det_img.save(buf.name)
-                        with open(buf.name, "rb") as fp:
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                        det_img.save(tmp.name)
+                        with open(tmp.name, "rb") as fp:
                             st.download_button(
                                 "Download detection image",
                                 data=fp,
@@ -371,21 +382,21 @@ for idx, f in enumerate(uploaded_files):
                     else:
                         st.info("No polyp detected.")
 
-            if pred == 1 and ordinal_model is not None:
+            if pred == 1:
                 st.write("**UC severity**")
-                try:
-                    severity_label, severity_probs = predict_ordinal(ordinal_model, image)
-                    st.write(f"**Severity:** {SEVERITY_NAMES[severity_label]}")
-                    st.write(f"**Mayo grade:** {severity_label}/3")
+                if ordinal_model is None:
+                    st.warning("Ordinal model not loaded.")
+                else:
+                    try:
+                        severity_label, severity_probs = predict_ordinal(ordinal_model, image)
+                        st.write(f"**Severity:** {SEVERITY_NAMES[severity_label]}")
+                        st.write(f"**Mayo grade:** {severity_label}/3")
 
-                    if show_details:
-                        for i, p in enumerate(severity_probs):
-                            st.write(f"{SEVERITY_NAMES[i]}: {p * 100:.2f}%")
-                            st.progress(float(p))
-                except Exception as e:
-                    st.error(f"Severity model failed: {e}")
-
-            if pred == 1 and ordinal_model is None:
-                st.warning("Ordinal model not available.")
+                        if show_details:
+                            for i, p in enumerate(severity_probs):
+                                st.write(f"{SEVERITY_NAMES[i]}: {p * 100:.2f}%")
+                                st.progress(float(p))
+                    except Exception as e:
+                        st.error(f"Severity model failed: {e}")
 
 st.success("Done.")
