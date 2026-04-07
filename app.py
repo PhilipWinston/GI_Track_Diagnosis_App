@@ -7,21 +7,28 @@ import streamlit as st
 import timm
 import torch
 import torch.nn as nn
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torchvision import transforms
 
+ULTRALYTICS_IMPORT_ERROR = None
 try:
     from ultralytics import YOLO
     HAS_ULTRALYTICS = True
-except Exception:
+except Exception as e:
+    YOLO = None
     HAS_ULTRALYTICS = False
+    ULTRALYTICS_IMPORT_ERROR = repr(e)
 
 
 # ============================================================================
-# CONFIG
+# PAGE
 # ============================================================================
-st.set_page_config(page_title="GI Tract Diagnosis System", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="GI Tract Diagnosis System",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMG_SIZE = 224
@@ -52,20 +59,27 @@ transform = transforms.Compose(
     ]
 )
 
+# ============================================================================
+# STYLE
+# ============================================================================
+st.markdown(
+    """
+<style>
+.block-container { padding-top: 1rem; padding-bottom: 1rem; max-width: 100%; }
+.small-box {
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 1rem;
+    background: white;
+    box-shadow: 0 2px 6px rgba(0,0,0,.05);
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
-# ============================================================================
-# SIMPLE UI
-# ============================================================================
 st.title("GI Tract Diagnosis System")
-st.caption("Simple working app for classification, UC severity, and YOLOv11 polyp detection")
-
-st.sidebar.header("Settings")
-conf_threshold = st.sidebar.slider("YOLO confidence", 0.05, 0.95, 0.25, 0.05)
-show_probs = st.sidebar.checkbox("Show probabilities", value=True)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Model Status")
-
+st.caption("Simple working app with classification, UC severity, YOLOv11 polyp detection, and GradCAM++")
 
 # ============================================================================
 # MODEL
@@ -92,15 +106,17 @@ class ResEffFusion(nn.Module):
     def forward(self, x):
         eff = self.eff(x)[-1]
         res = self.res(x)[-1]
+
         if eff.shape[2:] != res.shape[2:]:
             res = nn.functional.interpolate(res, size=eff.shape[2:], mode="bilinear", align_corners=False)
+
         fused = self.eff_weight * self.eff_proj(eff) + self.res_weight * self.res_proj(res)
         fused = self.relu(self.bn(fused))
         return self.classifier(self.pool(fused).flatten(1))
 
 
 # ============================================================================
-# CHECKPOINT HELPERS
+# HELPERS
 # ============================================================================
 def safe_torch_load(path: str):
     try:
@@ -134,6 +150,16 @@ def infer_num_outputs(state_dict: dict, default_outputs: int):
     return default_outputs
 
 
+def download_if_missing(file_id: str, out_path: str) -> bool:
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+        return True
+    try:
+        gdown.download(f"https://drive.google.com/uc?id={file_id}", out_path, quiet=False)
+        return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
+    except Exception:
+        return False
+
+
 @st.cache_resource
 def load_torch_model(path: str, default_outputs: int):
     ckpt = safe_torch_load(path)
@@ -164,9 +190,6 @@ def load_yolo_model(path: str):
         return None
 
 
-# ============================================================================
-# PREDICTION HELPERS
-# ============================================================================
 def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
     sig = torch.sigmoid(logits)
     k = logits.size(1) + 1
@@ -203,6 +226,87 @@ def predict_ordinal(model, image: Image.Image):
     return int(np.argmax(probs)), probs
 
 
+class GradCAMpp:
+    def __init__(self, model: nn.Module, target_layer: nn.Module, is_ordinal: bool = False):
+        self.model = model
+        self.is_ordinal = is_ordinal
+        self._acts = None
+        self._grads = None
+        self.handles = []
+        self.handles.append(target_layer.register_forward_hook(self._fwd))
+        self.handles.append(target_layer.register_full_backward_hook(self._bwd))
+
+    def _fwd(self, _m, _i, out):
+        self._acts = out
+
+    def _bwd(self, _m, _i, grad_o):
+        self._grads = grad_o[0]
+
+    def close(self):
+        for h in self.handles:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        self.handles = []
+
+    @torch.enable_grad()
+    def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
+        try:
+            self.model.zero_grad(set_to_none=True)
+            logits = self.model(input_tensor)
+
+            if self.is_ordinal:
+                if logits.size(1) == 3:
+                    sig = torch.sigmoid(logits)
+                    k = logits.size(1) + 1
+                    if target_class == 0:
+                        score = 1 - sig[:, 0]
+                    elif target_class == k - 1:
+                        score = sig[:, k - 2]
+                    else:
+                        score = sig[:, target_class - 1] - sig[:, target_class]
+                else:
+                    score = torch.softmax(logits, dim=1)[:, target_class]
+            else:
+                score = torch.softmax(logits, dim=1)[:, target_class]
+
+            score.sum().backward(retain_graph=False)
+
+            acts = self._acts
+            grads = self._grads
+
+            g2 = grads ** 2
+            g3 = grads ** 3
+            sum_act = acts.sum(dim=(2, 3), keepdim=True)
+            alpha = g2 / (2 * g2 + sum_act * g3 + 1e-8)
+            weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))
+
+            cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))
+            cam = cam.squeeze().detach().cpu().numpy()
+            cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+            cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
+            cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+            return np.array(cam_pil, dtype=np.float32) / 255.0
+        finally:
+            self.close()
+
+
+def jet_colormap(gray: np.ndarray) -> np.ndarray:
+    r = np.clip(1.5 - np.abs(gray * 4 - 3), 0, 1)
+    g = np.clip(1.5 - np.abs(gray * 4 - 2), 0, 1)
+    b = np.clip(1.5 - np.abs(gray * 4 - 1), 0, 1)
+    return (np.stack([r, g, b], axis=-1) * 255).astype(np.uint8)
+
+
+def make_gradcam_overlay(cam: np.ndarray, original_pil: Image.Image, alpha: float = 0.45) -> Image.Image:
+    orig = np.array(original_pil.resize((IMG_SIZE, IMG_SIZE)).convert("RGB"), dtype=np.float32)
+    heat = jet_colormap(cam).astype(np.float32)
+    blend = ((1 - alpha) * orig + alpha * heat).clip(0, 255).astype(np.uint8)
+    return Image.fromarray(blend)
+
+
 def yolo_predict_and_annotate(yolo_model, image: Image.Image, conf: float):
     if yolo_model is None:
         return None, []
@@ -214,7 +318,7 @@ def yolo_predict_and_annotate(yolo_model, image: Image.Image, conf: float):
         return image.convert("RGB"), []
 
     r0 = results[0]
-    annotated = r0.plot()  # BGR numpy array
+    annotated = r0.plot()
     annotated = Image.fromarray(annotated[:, :, ::-1].copy())
 
     detections = []
@@ -238,26 +342,12 @@ def yolo_predict_and_annotate(yolo_model, image: Image.Image, conf: float):
 
 
 # ============================================================================
-# LOAD MODELS
+# DOWNLOAD + LOAD
 # ============================================================================
-def download_if_missing(file_id: str, out_path: str) -> bool:
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
-        return True
-    try:
-        gdown.download(f"https://drive.google.com/uc?id={file_id}", out_path, quiet=False)
-        return os.path.exists(out_path) and os.path.getsize(out_path) > 1024
-    except Exception:
-        return False
-
-
 dl_ok = {}
 for name, file_id in DRIVE_IDS.items():
     ok = download_if_missing(file_id, MODEL_PATHS[name])
     dl_ok[name] = ok
-    st.sidebar.write(f"{'✅' if ok else '❌'} {name}")
-
-st.sidebar.markdown("---")
-st.sidebar.write(f"Device: {DEVICE.type.upper()}")
 
 classifier_model = None
 ordinal_model = None
@@ -276,17 +366,37 @@ except Exception:
     ordinal_model = None
 
 try:
-    if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]) and HAS_ULTRALYTICS:
+    if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]):
         yolo_model = load_yolo_model(MODEL_PATHS["polyp"])
 except Exception:
     yolo_model = None
 
+
+# ============================================================================
+# SIDEBAR
+# ============================================================================
+st.sidebar.header("Settings")
+conf_threshold = st.sidebar.slider("YOLO confidence", 0.05, 0.95, 0.25, 0.05)
+show_probs = st.sidebar.checkbox("Show probabilities", value=True)
+show_gradcam = st.sidebar.checkbox("Show GradCAM++", value=True)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Model Status")
+st.sidebar.write(f"{'✅' if dl_ok.get('classifier') else '❌'} classifier")
+st.sidebar.write(f"{'✅' if dl_ok.get('ordinal') else '❌'} ordinal")
+st.sidebar.write(f"{'✅' if dl_ok.get('polyp') else '❌'} polyp")
+
 if not HAS_ULTRALYTICS:
-    st.sidebar.error("ultralytics not installed")
+    st.sidebar.error("ultralytics import failed")
+    if ULTRALYTICS_IMPORT_ERROR:
+        st.sidebar.code(ULTRALYTICS_IMPORT_ERROR)
 elif yolo_model is None:
-    st.sidebar.warning("YOLO model not loaded")
+    st.sidebar.error("YOLO model could not be loaded")
 else:
     st.sidebar.success("YOLO loaded")
+
+st.sidebar.markdown("---")
+st.sidebar.write(f"Device: {DEVICE.type.upper()}")
 
 
 # ============================================================================
@@ -304,7 +414,7 @@ if not uploaded_files:
 
 
 # ============================================================================
-# APP CONTENT
+# MAIN
 # ============================================================================
 for idx, f in enumerate(uploaded_files):
     image = Image.open(f).convert("RGB")
@@ -320,50 +430,78 @@ for idx, f in enumerate(uploaded_files):
     with c2:
         if classifier_model is None:
             st.error("Classification model not loaded.")
+            continue
+
+        pred, conf, probs = predict_classification(classifier_model, image)
+        st.write(f"**Prediction:** {CLASS_NAMES[pred]}")
+        st.write(f"**Confidence:** {conf * 100:.2f}%")
+
+        if show_probs:
+            for i, p in enumerate(probs):
+                st.write(f"{CLASS_NAMES[i]}: {p * 100:.2f}%")
+                st.progress(float(p))
+
+        if show_gradcam:
+            st.markdown("### GradCAM++ - Classifier")
+            x = transform(image).unsqueeze(0).to(DEVICE)
+            campp = GradCAMpp(classifier_model, classifier_model.bn, is_ordinal=False)
+            cam = campp.generate(x, pred)
+
+            g1, g2, g3 = st.columns(3)
+            with g1:
+                st.image(image.resize((IMG_SIZE, IMG_SIZE)), caption="Original", use_container_width=True)
+            with g2:
+                st.image(Image.fromarray(jet_colormap(cam)), caption="Heatmap", use_container_width=True)
+            with g3:
+                st.image(make_gradcam_overlay(cam, image), caption="Overlay", use_container_width=True)
+
+        st.markdown("### YOLOv11 Polyp Detection")
+        if yolo_model is None:
+            st.error("YOLO model not available.")
         else:
-            pred, conf, probs = predict_classification(classifier_model, image)
-            st.write(f"**Prediction:** {CLASS_NAMES[pred]}")
-            st.write(f"**Confidence:** {conf * 100:.2f}%")
+            annotated, detections = yolo_predict_and_annotate(yolo_model, image, conf_threshold)
+            st.image(annotated, caption="YOLOv11 bounding boxes", use_container_width=True)
 
-            if show_probs:
-                for i, p in enumerate(probs):
-                    st.write(f"{CLASS_NAMES[i]}: {p * 100:.2f}%")
-                    st.progress(float(p))
+            if detections:
+                st.success(f"{len(detections)} polyp(s) detected")
+                for i, d in enumerate(detections, 1):
+                    x1, y1, x2, y2 = d["xyxy"]
+                    st.write(
+                        f"**Box {i}** | {d['cls_name']} | conf: {d['conf']:.2f} | "
+                        f"xyxy: ({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})"
+                    )
+            else:
+                st.info("No polyp detected.")
 
-            if pred == 2:
-                st.markdown("### YOLOv11 Polyp Detection")
-                if yolo_model is None:
-                    st.error("YOLO model not available.")
-                else:
-                    annotated, detections = yolo_predict_and_annotate(yolo_model, image, conf_threshold)
-                    st.image(annotated, caption="YOLOv11 bounding boxes", use_container_width=True)
+        if pred == 1 and ordinal_model is not None:
+            st.markdown("### Ulcerative Colitis Severity")
+            try:
+                severity_label, severity_probs = predict_ordinal(ordinal_model, image)
+                st.write(f"**Severity:** {SEVERITY_NAMES[severity_label]}")
+                st.write(f"**Mayo grade:** {severity_label}/3")
 
-                    if detections:
-                        st.success(f"{len(detections)} polyp(s) detected")
-                        for i, d in enumerate(detections, 1):
-                            x1, y1, x2, y2 = d["xyxy"]
-                            st.write(
-                                f"**Box {i}** | {d['cls_name']} | conf: {d['conf']:.2f} | "
-                                f"xyxy: ({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})"
-                            )
-                    else:
-                        st.info("No polyp detected.")
+                if show_probs:
+                    for i, p in enumerate(severity_probs):
+                        st.write(f"{SEVERITY_NAMES[i]}: {p * 100:.2f}%")
+                        st.progress(float(p))
 
-            if pred == 1 and ordinal_model is not None:
-                st.markdown("### Ulcerative Colitis Severity")
-                try:
-                    severity_label, severity_probs = predict_ordinal(ordinal_model, image)
-                    st.write(f"**Severity:** {SEVERITY_NAMES[severity_label]}")
-                    st.write(f"**Mayo grade:** {severity_label}/3")
+                if show_gradcam:
+                    st.markdown("### GradCAM++ - Severity")
+                    x = transform(image).unsqueeze(0).to(DEVICE)
+                    campp = GradCAMpp(ordinal_model, ordinal_model.bn, is_ordinal=True)
+                    cam = campp.generate(x, severity_label)
 
-                    if show_probs:
-                        for i, p in enumerate(severity_probs):
-                            st.write(f"{SEVERITY_NAMES[i]}: {p * 100:.2f}%")
-                            st.progress(float(p))
-                except Exception as e:
-                    st.error(f"Severity model failed: {e}")
+                    g1, g2, g3 = st.columns(3)
+                    with g1:
+                        st.image(image.resize((IMG_SIZE, IMG_SIZE)), caption="Original", use_container_width=True)
+                    with g2:
+                        st.image(Image.fromarray(jet_colormap(cam)), caption="Heatmap", use_container_width=True)
+                    with g3:
+                        st.image(make_gradcam_overlay(cam, image), caption="Overlay", use_container_width=True)
+            except Exception as e:
+                st.error(f"Severity model failed: {e}")
 
-            if pred == 1 and ordinal_model is None:
-                st.warning("Ordinal model not available.")
+        if pred == 1 and ordinal_model is None:
+            st.warning("Ordinal model not loaded.")
 
 st.success("Done.")
