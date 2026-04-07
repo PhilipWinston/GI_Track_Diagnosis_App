@@ -56,8 +56,8 @@ MODEL_DIR = "models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 DRIVE_IDS = {
-    "classifier": "1cvDPCfVBLWjCtx9mjz0KFWCwTwRs2atL",
-    "ordinal": "1Hvng1F6upAUjfsZe_sLpTmmH8lia04TI",
+    "classifier": "1aZke_47izApUtev2-Jlr1j4ZC84DC1i1",
+    "ordinal": "1Q74a7he0LnLfDJEN90YLpMhzJxI0wKa2",
     "polyp": "1xzGUJ1d9qDQKiodCzbWVOH07gNsffWnS",
 }
 
@@ -71,14 +71,11 @@ MODEL_PATHS = {
 # ============================================================================
 st.markdown("""
 <style>
-    /* Remove default padding */
     .block-container {
         padding-top: 1rem;
         padding-bottom: 0rem;
         max-width: 100%;
     }
-    
-    /* Header styling */
     .main-header {
         text-align: center;
         padding: 2.5rem 1rem;
@@ -86,22 +83,18 @@ st.markdown("""
         border-radius: 15px;
         margin-bottom: 2rem;
     }
-    
     .main-header h1 {
         font-size: 2.5rem;
         font-weight: 700;
         margin: 0;
         color: white !important;
     }
-    
     .main-header p {
         font-size: 1.1rem;
         margin: 0.5rem 0 0 0;
         color: white !important;
         opacity: 0.95;
     }
-    
-    /* Card styling */
     .result-card {
         background: white;
         border-radius: 12px;
@@ -111,7 +104,6 @@ st.markdown("""
         border: 1px solid #e5e7eb;
         height: 100%;
     }
-    
     .image-card {
         background: white;
         border-radius: 12px;
@@ -121,14 +113,11 @@ st.markdown("""
         text-align: center;
         margin-bottom: 1rem;
     }
-    
     .image-card h3 {
         margin: 0 0 1rem 0;
         color: #1f2937 !important;
         font-size: 1.3rem;
     }
-    
-    /* Prediction badge */
     .prediction-badge {
         display: inline-block;
         padding: 1rem 2rem;
@@ -139,20 +128,15 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
         color: white !important;
     }
-    
-    /* Confidence container */
     .confidence-container {
         margin: 2rem 0;
     }
-    
     .confidence-label {
         font-size: 1rem;
         color: #374151 !important;
         margin-bottom: 0.75rem;
         font-weight: 600;
     }
-    
-    /* Severity badge */
     .severity-badge {
         display: inline-block;
         padding: 0.75rem 1.5rem;
@@ -163,8 +147,6 @@ st.markdown("""
         color: white !important;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     }
-    
-    /* Detection info */
     .detection-info {
         background: #dbeafe;
         border-left: 5px solid #3b82f6;
@@ -172,33 +154,26 @@ st.markdown("""
         border-radius: 10px;
         margin: 1.5rem 0;
     }
-    
     .detection-title {
         font-size: 1.15rem;
         font-weight: 700;
         color: #1e3a8a !important;
         margin-bottom: 0.5rem;
     }
-    
     .detection-subtitle {
         font-size: 0.95rem;
         color: #1e40af !important;
     }
-    
     .detection-info-warning {
         background: #fef3c7;
         border-left: 5px solid #f59e0b;
     }
-    
     .detection-info-warning .detection-title {
         color: #78350f !important;
     }
-    
     .detection-info-warning .detection-subtitle {
         color: #92400e !important;
     }
-    
-    /* Info boxes */
     .info-box {
         background: #f9fafb;
         border-radius: 10px;
@@ -206,41 +181,32 @@ st.markdown("""
         margin: 1.5rem 0;
         border: 1px solid #e5e7eb;
     }
-    
     .info-box-title {
         font-weight: 700;
         color: #1f2937 !important;
         margin-bottom: 0.75rem;
         font-size: 1.1rem;
     }
-    
-    /* Stats display */
     .stat-row {
         display: flex;
         justify-content: space-between;
         padding: 0.75rem 0;
         border-bottom: 1px solid #e5e7eb;
     }
-    
     .stat-label {
         color: #6b7280 !important;
         font-size: 1rem;
     }
-    
     .stat-value {
         color: #111827 !important;
         font-weight: 600;
         font-size: 1rem;
     }
-    
-    /* Divider */
     .divider {
         height: 2px;
         background: linear-gradient(to right, transparent, #e5e7eb, transparent);
         margin: 3rem 0;
     }
-    
-    /* Upload section */
     .upload-section {
         background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
         border-radius: 12px;
@@ -248,17 +214,13 @@ st.markdown("""
         text-align: center;
         margin: 2rem 0;
     }
-    
     .upload-section h3 {
         color: #1f2937 !important;
         margin-top: 0;
     }
-    
     .upload-section p {
         color: #4b5563 !important;
     }
-    
-    /* Footer */
     .footer {
         text-align: center;
         padding: 2rem 0;
@@ -267,13 +229,9 @@ st.markdown("""
         margin-top: 3rem;
         border-top: 1px solid #e5e7eb;
     }
-    
-    /* Streamlit overrides */
     [data-testid="column"] {
         padding: 0.5rem;
     }
-    
-    /* Make sure all text is visible */
     p, span, div, h1, h2, h3, h4, h5, h6 {
         color: inherit;
     }
@@ -283,67 +241,105 @@ st.markdown("""
 # ============================================================================
 # MODEL CLASSES
 # ============================================================================
-class EFFResNetViT(nn.Module):
-    def __init__(self, num_classes=4):
+
+class ResEffFusionClassifier(nn.Module):
+    """4-class classifier: Normal, UC, Polyps, Esophagitis"""
+    def __init__(self, num_classes=4, eff_weight=0.75):
         super().__init__()
+        self.eff_weight = eff_weight
+        self.res_weight = 1 - eff_weight
+
         self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
+        eff_dim = self.eff.feature_info[-1]['num_chs']
+
         self.res = timm.create_model("resnet50", pretrained=False, features_only=True)
-        
-        eff_dim = self.eff.feature_info[-1]["num_chs"]
-        res_dim = self.res.feature_info[-1]["num_chs"]
-        
-        self.fusion = nn.Conv2d(eff_dim + res_dim, 768, kernel_size=1)
-        
-        enc = nn.TransformerEncoderLayer(
-            d_model=768, nhead=12, dim_feedforward=3072,
-            dropout=0.2, batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(enc, num_layers=3)
-        
-        self.classifier = nn.Sequential(
-            nn.LayerNorm(768),
-            nn.Dropout(0.4),
-            nn.Linear(768, num_classes)
-        )
-    
+        res_dim = self.res.feature_info[-1]['num_chs']
+
+        self.eff_proj = nn.Conv2d(eff_dim, 1024, 1)
+        self.res_proj = nn.Conv2d(res_dim, 1024, 1)
+
+        self.bn   = nn.BatchNorm2d(1024)
+        self.relu = nn.ReLU(inplace=False)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Linear(1024, num_classes)
+
     def forward(self, x):
         eff = self.eff(x)[-1]
         res = self.res(x)[-1]
-        fused = torch.cat([eff, res], dim=1)
-        t = self.fusion(fused)
-        t = t.flatten(2).transpose(1, 2)
-        t = self.transformer(t)
-        pooled = t.mean(dim=1)
+
+        if eff.shape[2:] != res.shape[2:]:
+            res = nn.functional.interpolate(res, size=eff.shape[2:], mode="bilinear", align_corners=False)
+
+        eff = self.eff_proj(eff)
+        res = self.res_proj(res)
+
+        fused = self.eff_weight * eff + self.res_weight * res
+        fused = self.relu(self.bn(fused))
+
+        pooled = self.pool(fused).flatten(1)
         return self.classifier(pooled)
 
 
-class EFFResNetViTOrdinal(nn.Module):
-    def __init__(self, num_classes=4):
+class ResEffFusionOrdinal(nn.Module):
+    """Ordinal (CORAL) severity model: outputs K-1 logits for 4 grades"""
+    def __init__(self, num_classes=4, eff_weight=0.75):
         super().__init__()
+        self.num_classes = num_classes
+        self.eff_weight  = eff_weight
+        self.res_weight  = 1 - eff_weight
+
         self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
+        eff_dim = self.eff.feature_info[-1]['num_chs']
+
         self.res = timm.create_model("resnet50", pretrained=False, features_only=True)
-        
-        eff_dim = self.eff.feature_info[-1]["num_chs"]
-        res_dim = self.res.feature_info[-1]["num_chs"]
-        
-        self.fusion = nn.Conv2d(eff_dim + res_dim, 768, kernel_size=1)
-        
-        enc = nn.TransformerEncoderLayer(
-            d_model=768, nhead=12, dim_feedforward=3072,
-            dropout=0.1, batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(enc, num_layers=2)
-        self.ordinal_head = nn.Linear(768, num_classes - 1)
-    
+        res_dim = self.res.feature_info[-1]['num_chs']
+
+        self.eff_proj = nn.Conv2d(eff_dim, 1024, 1)
+        self.res_proj = nn.Conv2d(res_dim, 1024, 1)
+
+        self.bn   = nn.BatchNorm2d(1024)
+        self.relu = nn.ReLU(inplace=False)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+
+        # CORAL head: K-1 outputs
+        self.classifier = nn.Linear(1024, num_classes - 1)
+
     def forward(self, x):
         eff = self.eff(x)[-1]
         res = self.res(x)[-1]
-        fused = torch.cat([eff, res], dim=1)
-        t = self.fusion(fused)
-        t = t.flatten(2).transpose(1, 2)
-        t = self.transformer(t)
-        pooled = t.mean(dim=1)
-        return self.ordinal_head(pooled)
+
+        if eff.shape[2:] != res.shape[2:]:
+            res = nn.functional.interpolate(res, size=eff.shape[2:], mode="bilinear", align_corners=False)
+
+        eff = self.eff_proj(eff)
+        res = self.res_proj(res)
+
+        fused = self.eff_weight * eff + self.res_weight * res
+        fused = self.relu(self.bn(fused))
+
+        pooled = self.pool(fused).flatten(1)
+        return self.classifier(pooled)
+
+
+# ============================================================================
+# CORAL UTILITY
+# ============================================================================
+
+def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
+    """Convert CORAL K-1 logits to K class probabilities."""
+    sig  = torch.sigmoid(logits)          # (1, K-1)
+    K_1  = logits.size(1)
+    K    = K_1 + 1
+
+    probs = []
+    probs.append((1 - sig[:, 0]).unsqueeze(1))          # P(Y=0)
+    for r in range(1, K - 1):
+        probs.append((sig[:, r-1] - sig[:, r]).unsqueeze(1))
+    probs.append(sig[:, K_1 - 1].unsqueeze(1))           # P(Y=K-1)
+
+    probs = torch.cat(probs, dim=1)
+    probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-12)
+    return probs.squeeze(0).cpu().numpy()
 
 
 # ============================================================================
@@ -358,11 +354,10 @@ transform = transforms.Compose([
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
 def download_if_missing(file_id: str, out_path: str, desc: str):
-    """Download model from Google Drive if not present"""
     if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
         return True
-    
     url = f"https://drive.google.com/uc?id={file_id}"
     try:
         with st.spinner(f"Downloading {desc} model..."):
@@ -374,8 +369,7 @@ def download_if_missing(file_id: str, out_path: str, desc: str):
 
 @st.cache_resource
 def load_classification_model(path: str):
-    """Load classification model"""
-    m = EFFResNetViT(num_classes=4).to(DEVICE)
+    m = ResEffFusionClassifier(num_classes=4).to(DEVICE)
     m.load_state_dict(torch.load(path, map_location=DEVICE))
     m.eval()
     return m
@@ -383,8 +377,7 @@ def load_classification_model(path: str):
 
 @st.cache_resource
 def load_ordinal_model(path: str):
-    """Load ordinal severity model"""
-    m = EFFResNetViTOrdinal(num_classes=4).to(DEVICE)
+    m = ResEffFusionOrdinal(num_classes=4).to(DEVICE)
     m.load_state_dict(torch.load(path, map_location=DEVICE))
     m.eval()
     return m
@@ -392,7 +385,6 @@ def load_ordinal_model(path: str):
 
 @st.cache_resource
 def load_yolo_model(path: str):
-    """Load YOLO polyp detection model"""
     if not HAS_ULTRALYTICS:
         return (None, None)
     try:
@@ -402,172 +394,180 @@ def load_yolo_model(path: str):
 
 
 def predict_class(model, pil_img):
-    """Predict class from image"""
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         logits = model(x)
-        probs = torch.softmax(logits, dim=1)[0]
-        pred = int(probs.argmax())
-        conf = float(probs[pred])
+        probs  = torch.softmax(logits, dim=1)[0]
+        pred   = int(probs.argmax())
+        conf   = float(probs[pred])
     return pred, conf, probs.cpu().numpy()
 
 
 def predict_ordinal(ordinal_model, pil_img):
-    """Predict ordinal severity using cumulative link model"""
+    """CORAL ordinal prediction → label + per-class probabilities."""
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         logits = ordinal_model(x)
-        # Cumulative probabilities for ordinal regression
-        # These represent P(Y > threshold_k)
-        cumulative_probs = torch.sigmoid(logits)[0].cpu().numpy()
-        
-        # Convert cumulative probabilities to individual class probabilities
-        # For ordinal regression with 4 classes (0,1,2,3), we have 3 thresholds
-        # P(Y=0) = 1 - P(Y>0) = 1 - cumulative_probs[0]
-        # P(Y=1) = P(Y>0) - P(Y>1) = cumulative_probs[0] - cumulative_probs[1]
-        # P(Y=2) = P(Y>1) - P(Y>2) = cumulative_probs[1] - cumulative_probs[2]
-        # P(Y=3) = P(Y>2) = cumulative_probs[2]
-        
-        individual_probs = np.zeros(4)
-        individual_probs[0] = 1.0 - cumulative_probs[0]  # Remission (class 0)
-        individual_probs[1] = cumulative_probs[0] - cumulative_probs[1]  # Mild (class 1)
-        individual_probs[2] = cumulative_probs[1] - cumulative_probs[2]  # Moderate (class 2)
-        individual_probs[3] = cumulative_probs[2]  # Severe (class 3)
-        
-        # Ensure probabilities are non-negative and sum to 1
-        individual_probs = np.clip(individual_probs, 0, 1)
-        individual_probs = individual_probs / individual_probs.sum()
-        
-        # Predicted class is the one with highest probability
-        label = int(np.argmax(individual_probs))
-        
-    return label, individual_probs
+        probs  = coral_logits_to_probs(logits)          # shape (4,)
+        probs  = np.clip(probs, 0, 1)
+        probs  = probs / probs.sum()
+        label  = int(np.argmax(probs))
+    return label, probs
 
 
 def run_yolo(yolo_loader, src_image, conf=0.25):
-    """Run YOLO polyp detection"""
     if yolo_loader[0] != "ultralytics":
         return []
-    
-    # Use higher resolution for detection
     img_bgr = cv2.cvtColor(
-        np.array(src_image.resize((640, 640))), 
+        np.array(src_image.resize((640, 640))),
         cv2.COLOR_RGB2BGR
     )
-    
     results = yolo_loader[1].predict(source=img_bgr, conf=conf, verbose=False)
     r = results[0]
-    
     boxes = []
     for b in r.boxes.data.tolist():
         x1, y1, x2, y2, confv, cls = b
-        boxes.append({
-            "xyxy": np.array([x1, y1, x2, y2]),
-            "conf": confv
-        })
-    
+        boxes.append({"xyxy": np.array([x1, y1, x2, y2]), "conf": confv})
     return boxes
 
 
-def overlay_boxes_high_quality(image, boxes):
-    """Overlay detection boxes with high quality rendering"""
-    # Convert to RGB
-    img_pil = image.convert("RGB")
-    w, h = img_pil.size
-    
-    # Create drawing object
-    draw = ImageDraw.Draw(img_pil)
-    
-    # Calculate font size (smaller and responsive)
-    font_size = max(14, min(w, h) // 35)
-    
+# ============================================================================
+# IMPROVED YOLO BOUNDING BOX OVERLAY
+# ============================================================================
+
+def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
+    """
+    Render YOLO detections with a polished, clinical look:
+    - Thick neon-green box with rounded corners drawn via multiple rects
+    - Corner accent marks (L-shaped brackets)
+    - Semi-transparent filled label pill
+    - Confidence bar inside the label
+    """
+    img_pil = image.convert("RGBA")
+    w, h    = img_pil.size
+
+    # ---- overlay layer for transparent fills ----
+    overlay = Image.new("RGBA", img_pil.size, (0, 0, 0, 0))
+    draw_o  = ImageDraw.Draw(overlay)
+    draw    = ImageDraw.Draw(img_pil)
+
+    # Responsive sizes
+    lw        = max(3, min(w, h) // 180)       # box line width
+    corner_sz = max(18, min(w, h) // 18)       # L-bracket arm length
+    font_size = max(15, min(w, h) // 28)
+
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(12, font_size - 4))
     except:
         try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+            font    = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+            font_sm = font
         except:
-            # Fallback to default font
-            font = ImageFont.load_default()
-    
-    # Scale factors from YOLO resolution (640x640) to image size
+            font    = ImageFont.load_default()
+            font_sm = font
+
+    # Scale factors from YOLO 640×640 → image size
     sx = w / 640
     sy = h / 640
-    
+
+    # Colour palette
+    BOX_COLOR    = (0, 230, 100, 255)      # bright green  RGBA
+    BRACKET_COL  = (255, 255, 255, 255)    # white corners
+    LABEL_BG     = (0, 180, 80, 210)       # semi-transparent green pill
+    LABEL_FG     = (255, 255, 255, 255)    # white text
+    BAR_BG       = (0, 100, 40, 200)
+    BAR_FG       = (160, 255, 160, 230)
+
     for idx, box in enumerate(boxes):
-        x1, y1, x2, y2 = box["xyxy"]
-        
-        # Scale to image coordinates
-        x1 = max(0, int(x1 * sx))
-        y1 = max(0, int(y1 * sy))
-        x2 = min(w, int(x2 * sx))
-        y2 = min(h, int(y2 * sy))
-        
-        # Draw bounding box with green color
-        line_width = max(3, min(w, h) // 200)
-        for i in range(line_width):
+        x1r, y1r, x2r, y2r = box["xyxy"]
+        x1 = max(0, int(x1r * sx))
+        y1 = max(0, int(y1r * sy))
+        x2 = min(w - 1, int(x2r * sx))
+        y2 = min(h - 1, int(y2r * sy))
+
+        bw = x2 - x1
+        bh = y2 - y1
+        if bw < 4 or bh < 4:
+            continue
+
+        conf_val = box["conf"]
+
+        # ---- 1. Subtle filled background for the box interior ----
+        draw_o.rectangle([x1, y1, x2, y2], fill=(0, 230, 100, 22))
+
+        # ---- 2. Main bounding box (layered for thickness) ----
+        for i in range(lw):
             draw.rectangle(
                 [x1 + i, y1 + i, x2 - i, y2 - i],
-                outline=(0, 255, 0),
+                outline=BOX_COLOR[:3],
                 width=1
             )
-        
-        # Create label text - shorter format
-        label = f"Polyp {idx + 1} - {box['conf']*100:.0f}%"
-        
-        # Get text dimensions
-        bbox = draw.textbbox((0, 0), label, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        
-        # Add padding
-        pad = 6
-        label_w = text_w + 2 * pad
-        label_h = text_h + 2 * pad
-        
-        # Position label (above box if space, otherwise below)
-        if y1 - label_h - 5 > 0:
-            # Above the box
-            label_x = x1
-            label_y = y1 - label_h - 5
-        elif y2 + label_h + 5 < h:
-            # Below the box
-            label_x = x1
-            label_y = y2 + 5
+
+        # ---- 3. Corner L-brackets (white accent) ----
+        cs = min(corner_sz, bw // 3, bh // 3)
+        ct = max(2, lw + 1)
+        corners = [
+            # top-left
+            [(x1, y1, x1 + cs, y1 + ct), (x1, y1, x1 + ct, y1 + cs)],
+            # top-right
+            [(x2 - cs, y1, x2, y1 + ct), (x2 - ct, y1, x2, y1 + cs)],
+            # bottom-left
+            [(x1, y2 - ct, x1 + cs, y2), (x1, y2 - cs, x1 + ct, y2)],
+            # bottom-right
+            [(x2 - cs, y2 - ct, x2, y2), (x2 - ct, y2 - cs, x2, y2)],
+        ]
+        for pair in corners:
+            for rect in pair:
+                draw.rectangle(rect, fill=BRACKET_COL[:3])
+
+        # ---- 4. Label pill ----
+        label_text = f"  Polyp {idx + 1}   {conf_val * 100:.0f}%  "
+        bbox_t = draw.textbbox((0, 0), label_text, font=font)
+        tw = bbox_t[2] - bbox_t[0]
+        th = bbox_t[3] - bbox_t[1]
+
+        pad_x, pad_y = 10, 6
+        pill_w = tw + 2 * pad_x
+        pill_h = th + 2 * pad_y + (font_size // 2)   # extra room for conf bar
+
+        # Position: prefer above box
+        if y1 - pill_h - 6 >= 0:
+            px, py = x1, y1 - pill_h - 6
+        elif y2 + pill_h + 6 <= h:
+            px, py = x1, y2 + 6
         else:
-            # Inside the box at top
-            label_x = x1 + 5
-            label_y = y1 + 5
-        
-        # Make sure label doesn't go off screen
-        if label_x + label_w > w:
-            label_x = w - label_w - 5
-        label_x = max(5, label_x)
-        
-        # Draw label background (green)
-        draw.rectangle(
-            [label_x, label_y, label_x + label_w, label_y + label_h],
-            fill=(0, 200, 0),
-            outline=(0, 150, 0),
-            width=2
-        )
-        
-        # Draw label text (white)
-        draw.text(
-            (label_x + pad, label_y + pad),
-            label,
-            fill=(255, 255, 255),
-            font=font
-        )
-    
-    return img_pil
+            px, py = x1 + 5, y1 + 5
+
+        # Clamp horizontally
+        px = min(max(px, 0), w - pill_w - 2)
+
+        # Draw pill background
+        draw_o.rectangle([px, py, px + pill_w, py + pill_h], fill=LABEL_BG)
+
+        # Draw text
+        draw.text((px + pad_x, py + pad_y), label_text, fill=LABEL_FG[:3], font=font)
+
+        # Confidence bar
+        bar_y    = py + pad_y + th + 4
+        bar_h    = max(5, font_size // 4)
+        bar_x1   = px + pad_x
+        bar_x2   = px + pill_w - pad_x
+        fill_x2  = bar_x1 + int((bar_x2 - bar_x1) * conf_val)
+
+        draw_o.rectangle([bar_x1, bar_y, bar_x2, bar_y + bar_h], fill=BAR_BG)
+        if fill_x2 > bar_x1:
+            draw_o.rectangle([bar_x1, bar_y, fill_x2, bar_y + bar_h], fill=BAR_FG)
+
+    # Merge overlay
+    img_pil = Image.alpha_composite(img_pil, overlay)
+    return img_pil.convert("RGB")
 
 
 # ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
-# Header
 st.markdown("""
 <div class="main-header">
     <h1>🔬 GI Tract Diagnosis System</h1>
@@ -602,8 +602,8 @@ for k in DRIVE_IDS:
 
 # Load models
 classification_model = None
-ordinal_model = None
-yolo_loader = (None, None)
+ordinal_model        = None
+yolo_loader          = (None, None)
 
 if dl_ok.get("classifier") and os.path.exists(MODEL_PATHS["classifier"]):
     classification_model = load_classification_model(MODEL_PATHS["classifier"])
@@ -620,7 +620,7 @@ st.sidebar.markdown("### 💻 System Info")
 st.sidebar.info(f"**Device:** {DEVICE.type.upper()}")
 st.sidebar.info(f"**Image Size:** {IMG_SIZE}×{IMG_SIZE}")
 
-# Main content
+# Conditions info banner
 st.markdown("""
 <div class="info-box">
     <div class="info-box-title">📋 Supported Conditions</div>
@@ -644,18 +644,17 @@ uploaded = st.file_uploader(
 if uploaded:
     st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
     st.markdown("## 🔍 Analysis Results")
-    
+
     progress_bar = st.progress(0)
-    status_text = st.empty()
-    
+    status_text  = st.empty()
+
     for idx, f in enumerate(uploaded):
         status_text.text(f"Processing image {idx+1} of {len(uploaded)}...")
-        
+
         img = Image.open(f).convert("RGB")
-        
-        # Create two columns
+
         col1, col2 = st.columns([1, 1.2])
-        
+
         with col1:
             st.markdown(f"""
             <div class="image-card">
@@ -663,22 +662,21 @@ if uploaded:
             """, unsafe_allow_html=True)
             st.image(img, use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
-        
+
         with col2:
             st.markdown('<div class="result-card">', unsafe_allow_html=True)
-            
+
             if not classification_model:
                 st.error("❌ Classification model not loaded")
                 st.markdown('</div>', unsafe_allow_html=True)
                 continue
-            
+
             # Predict
             pred, conf, all_probs = predict_class(classification_model, img)
             color = CLASS_COLORS[pred]
-            name = CLASS_NAMES[pred]
-            icon = CLASS_ICONS[pred]
-            
-            # Display prediction
+            name  = CLASS_NAMES[pred]
+            icon  = CLASS_ICONS[pred]
+
             st.markdown(f"""
             <div style="text-align: center;">
                 <div class="prediction-badge" style="background-color: {color}; color: white;">
@@ -686,32 +684,29 @@ if uploaded:
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            
-            # Confidence
+
             st.markdown('<div class="confidence-container">', unsafe_allow_html=True)
             st.markdown('<div class="confidence-label">Confidence Score</div>', unsafe_allow_html=True)
             st.progress(conf, text=f"{conf*100:.2f}%")
             st.markdown('</div>', unsafe_allow_html=True)
-            
-            # All class probabilities
+
             with st.expander("📊 View All Class Probabilities"):
                 for i, prob in enumerate(all_probs):
                     st.write(f"**{CLASS_NAMES[i]}:** {prob*100:.2f}%")
                     st.progress(float(prob))
-            
+
             st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Additional analyses based on prediction
+
+        # ---- Polyp detection ----
         if pred == 2 and yolo_loader[0] == "ultralytics":
-            # Polyp detection
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 🎯 Polyp Detection Results")
-            
+
             boxes = run_yolo(yolo_loader, img, conf_threshold)
-            
+
             if boxes:
                 detection_col1, detection_col2 = st.columns([1, 1])
-                
+
                 with detection_col1:
                     st.markdown(f"""
                     <div class="detection-info">
@@ -719,20 +714,13 @@ if uploaded:
                         <div class="detection-subtitle">Confidence threshold: {conf_threshold*100:.0f}%</div>
                     </div>
                     """, unsafe_allow_html=True)
-                    
-                    # Show detection stats
                     for i, box in enumerate(boxes):
-                        st.metric(
-                            f"Polyp #{i+1}",
-                            f"{box['conf']*100:.1f}%",
-                            delta="Detected"
-                        )
-                
+                        st.metric(f"Polyp #{i+1}", f"{box['conf']*100:.1f}%", delta="Detected")
+
                 with detection_col2:
                     over = overlay_boxes_high_quality(img, boxes)
                     st.image(over, caption="Detected Polyps", use_container_width=True)
-                    
-                    # Download button
+
                     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                     over.save(tmp.name, quality=95)
                     with open(tmp.name, "rb") as file:
@@ -750,21 +738,21 @@ if uploaded:
                     <div class="detection-subtitle">Try adjusting the confidence threshold in the sidebar</div>
                 </div>
                 """, unsafe_allow_html=True)
-        
+
         elif pred == 2:
             st.info("⚠️ YOLO model unavailable for polyp detection")
-        
-        # UC severity assessment
+
+        # ---- UC severity ----
         if pred == 1 and ordinal_model:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 📈 Ulcerative Colitis Severity Assessment")
-            
+
             label, probs = predict_ordinal(ordinal_model, img)
-            severity_names = ["Remission", "Mild", "Moderate", "Severe"]
+            severity_names  = ["Remission (Mayo 0)", "Mild (Mayo 1)", "Moderate (Mayo 2)", "Severe (Mayo 3)"]
             severity_colors = ["#10b981", "#f59e0b", "#fb923c", "#ef4444"]
-            
+
             severity_col1, severity_col2 = st.columns([1, 1])
-            
+
             with severity_col1:
                 st.markdown(f"""
                 <div style="text-align: center; padding: 1.5rem;">
@@ -772,38 +760,36 @@ if uploaded:
                         {severity_names[label]}
                     </div>
                     <div style="margin-top: 1.5rem; font-size: 1.2rem; color: #1f2937; font-weight: 600;">
-                        Severity Grade: <strong style="color: {severity_colors[label]};">{label}/3</strong>
+                        Mayo Grade: <strong style="color: {severity_colors[label]};">{label}/3</strong>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-            
+
             with severity_col2:
                 st.markdown('<div class="info-box">', unsafe_allow_html=True)
                 st.markdown('<div class="info-box-title">Severity Class Probabilities</div>', unsafe_allow_html=True)
-                
-                for i, (p, name) in enumerate(zip(probs, severity_names)):
-                    # Add checkmark to predicted class
+
+                for i, (p, sname) in enumerate(zip(probs, severity_names)):
                     prefix = "✓ " if i == label else "   "
                     st.markdown(f"""
                     <div style="margin: 0.75rem 0;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
                             <span style="font-weight: {'700' if i == label else '600'}; color: {'#1f2937' if i == label else '#6b7280'};">
-                                {prefix}{name} (Grade {i})
+                                {prefix}{sname}
                             </span>
                             <span style="font-weight: 700; color: {severity_colors[i]};">{p*100:.2f}%</span>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
                     st.progress(float(p))
-                
+
                 st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Separator between images
+
         if idx < len(uploaded) - 1:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-        
+
         progress_bar.progress((idx + 1) / len(uploaded))
-    
+
     status_text.text("✓ Analysis complete!")
     progress_bar.empty()
     status_text.empty()
@@ -822,6 +808,6 @@ else:
 st.markdown("""
 <div class="footer">
     <strong>Deep Learning Framework for GI Tract Disorder Diagnosis</strong><br>
-    Final Year Project 2026 • EFFResNetViT Architecture with YOLO Detection
+    Final Year Project 2026 • ResEffFusion Architecture with YOLO Detection
 </div>
 """, unsafe_allow_html=True)
