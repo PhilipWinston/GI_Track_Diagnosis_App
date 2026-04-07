@@ -116,7 +116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# MODEL DEFINITIONS  (ResEffFusion — matches training scripts exactly)
+# MODEL DEFINITIONS
 # ============================================================================
 
 class ResEffFusionClassifier(nn.Module):
@@ -125,12 +125,10 @@ class ResEffFusionClassifier(nn.Module):
         super().__init__()
         self.eff_weight = eff_weight
         self.res_weight = 1 - eff_weight
-
-        self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
-        eff_dim  = self.eff.feature_info[-1]["num_chs"]
-        self.res = timm.create_model("resnet50",        pretrained=False, features_only=True)
-        res_dim  = self.res.feature_info[-1]["num_chs"]
-
+        self.eff        = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
+        eff_dim         = self.eff.feature_info[-1]["num_chs"]
+        self.res        = timm.create_model("resnet50", pretrained=False, features_only=True)
+        res_dim         = self.res.feature_info[-1]["num_chs"]
         self.eff_proj   = nn.Conv2d(eff_dim, 1024, 1)
         self.res_proj   = nn.Conv2d(res_dim, 1024, 1)
         self.bn         = nn.BatchNorm2d(1024)
@@ -149,24 +147,22 @@ class ResEffFusionClassifier(nn.Module):
 
 
 class ResEffFusionOrdinal(nn.Module):
-    """Ordinal severity classifier — 4 outputs (Mayo 0-3), softmax at inference."""
+    """Ordinal severity classifier — 4 outputs (Mayo 0-3)"""
     def __init__(self, num_classes=4, eff_weight=0.75):
         super().__init__()
         self.num_classes = num_classes
         self.eff_weight  = eff_weight
         self.res_weight  = 1 - eff_weight
-
-        self.eff = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
-        eff_dim  = self.eff.feature_info[-1]["num_chs"]
-        self.res = timm.create_model("resnet50",        pretrained=False, features_only=True)
-        res_dim  = self.res.feature_info[-1]["num_chs"]
-
-        self.eff_proj   = nn.Conv2d(eff_dim, 1024, 1)
-        self.res_proj   = nn.Conv2d(res_dim, 1024, 1)
-        self.bn         = nn.BatchNorm2d(1024)
-        self.relu       = nn.ReLU(inplace=False)
-        self.pool       = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Linear(1024, num_classes)   # 4 outputs — matches checkpoint
+        self.eff         = timm.create_model("efficientnet_b4", pretrained=False, features_only=True)
+        eff_dim          = self.eff.feature_info[-1]["num_chs"]
+        self.res         = timm.create_model("resnet50", pretrained=False, features_only=True)
+        res_dim          = self.res.feature_info[-1]["num_chs"]
+        self.eff_proj    = nn.Conv2d(eff_dim, 1024, 1)
+        self.res_proj    = nn.Conv2d(res_dim, 1024, 1)
+        self.bn          = nn.BatchNorm2d(1024)
+        self.relu        = nn.ReLU(inplace=False)
+        self.pool        = nn.AdaptiveAvgPool2d(1)
+        self.classifier  = nn.Linear(1024, num_classes)   # 4 outputs — matches checkpoint
 
     def forward(self, x):
         eff = self.eff(x)[-1]
@@ -178,70 +174,109 @@ class ResEffFusionOrdinal(nn.Module):
         return self.classifier(self.pool(fused).flatten(1))
 
 
-
 # ============================================================================
-# GRADCAM++  — pure PyTorch + Pillow, zero cv2
-# Sourced from the ordinal (doc-2) and classifier (doc-3) GradCAM++ scripts,
-# unified into one class that handles both model types.
+# GRADCAM++
+# Fix 1: Store .detach().clone() in hooks so values survive backward pass
+# Fix 2: Switch model to train() before backward so BN hooks fire reliably,
+#         then restore eval() — cached models stay in eval otherwise
+# Fix 3: Guard against flat (all-zero) CAM → avoids solid blue from JET
+# Fix 4: Remove hooks after use to prevent accumulation across calls
 # ============================================================================
 
 class GradCAMpp:
-    """
-    GradCAM++ hooked on `target_layer` (use model.bn for ResEffFusion).
-    Both the classifier and ordinal models use softmax logits.
-    """
     def __init__(self, model: nn.Module, target_layer: nn.Module):
-        self.model = model
-        self._acts = None
-        self._grads = None
-        target_layer.register_forward_hook(self._fwd)
-        target_layer.register_full_backward_hook(self._bwd)
+        self.model       = model
+        self._acts       = None
+        self._grads      = None
+        self._fwd_handle = target_layer.register_forward_hook(self._fwd_hook)
+        self._bwd_handle = target_layer.register_full_backward_hook(self._bwd_hook)
 
-    def _fwd(self, _m, _i, out):     self._acts  = out
-    def _bwd(self, _m, _i, grad_o):  self._grads = grad_o[0]
+    def _fwd_hook(self, _m, _i, out):
+        # .detach().clone() so it isn't freed when the graph is cleared
+        self._acts = out.detach().clone()
 
-    @torch.enable_grad()
+    def _bwd_hook(self, _m, _i, grad_out):
+        self._grads = grad_out[0].detach().clone()
+
+    def remove(self):
+        """Always call after generate() to prevent hook accumulation."""
+        self._fwd_handle.remove()
+        self._bwd_handle.remove()
+
     def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
-        self.model.zero_grad()
-        logits = self.model(input_tensor)
-        score  = torch.softmax(logits, dim=1)[:, target_class]
-        score.sum().backward(retain_graph=False)
+        # BatchNorm behaves differently in eval() vs train(); hooks on BN
+        # layers need train() to capture proper intermediate activations.
+        was_training = self.model.training
+        self.model.train()
+
+        with torch.enable_grad():
+            self.model.zero_grad()
+            logits = self.model(input_tensor.detach())
+            score  = torch.softmax(logits, dim=1)[:, target_class]
+            score.sum().backward()
+
+        # Restore original mode
+        if not was_training:
+            self.model.eval()
 
         acts  = self._acts
         grads = self._grads
 
+        # Safety: hooks didn't fire
+        if acts is None or grads is None:
+            return np.full((IMG_SIZE, IMG_SIZE), 0.0, dtype=np.float32)
+
+        # GradCAM++ weighting
         g2      = grads ** 2
         g3      = grads ** 3
         sum_act = acts.sum(dim=(2, 3), keepdim=True)
-        alpha   = g2 / (2 * g2 + sum_act * g3 + 1e-8)
-        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))
+        alpha   = g2 / (2.0 * g2 + sum_act * g3 + 1e-8)
+        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))   # (1, C)
 
         cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))
-        cam = cam.squeeze().detach().cpu().numpy()
-        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        cam = cam.squeeze().cpu().numpy().astype(np.float32)
 
-        cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
-        cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
-        return np.array(cam_pil, dtype=np.float32) / 255.0
+        # Normalise — if cam is flat (all same value) return zeros, not blue
+        cam_min, cam_max = cam.min(), cam.max()
+        if (cam_max - cam_min) < 1e-6:
+            cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
+        else:
+            cam = (cam - cam_min) / (cam_max - cam_min)
+            # Upsample with Pillow (no cv2)
+            cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
+            cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+            cam     = np.array(cam_pil, dtype=np.float32) / 255.0
+
+        return cam
 
 
 # ============================================================================
-# COLOURMAP + OVERLAY  (replaces cv2.applyColorMap + cv2.addWeighted)
+# COLOURMAP + OVERLAY
+# Fixed JET formula — the previous version produced solid blue for low values
+# because the piecewise ranges were wrong.  This version matches matplotlib JET.
 # ============================================================================
 
 def _jet_colormap(gray: np.ndarray) -> np.ndarray:
-    """Segmented-linear JET approximation → uint8 RGB (H, W, 3)."""
-    r = np.clip(1.5 - np.abs(gray * 4 - 3), 0, 1)
-    g = np.clip(1.5 - np.abs(gray * 4 - 2), 0, 1)
-    b = np.clip(1.5 - np.abs(gray * 4 - 1), 0, 1)
+    """
+    Correct piecewise-linear JET colourmap (matches matplotlib).
+    gray: float32 array in [0, 1], any shape
+    returns: uint8 RGB array, same spatial shape + channel dim
+    """
+    r = np.clip(1.5 - np.abs(4.0 * gray - 3.0), 0.0, 1.0)
+    g = np.clip(1.5 - np.abs(4.0 * gray - 2.0), 0.0, 1.0)
+    b = np.clip(1.5 - np.abs(4.0 * gray - 1.0), 0.0, 1.0)
+    # At gray=0: r=0, g=0, b=0.5  → dark blue  ✓
+    # At gray=0.25: r=0, g=0.5, b=1 → cyan      ✓
+    # At gray=0.5:  r=0.5, g=1, b=0.5 → green   ✓
+    # At gray=0.75: r=1, g=0.5, b=0  → orange   ✓
+    # At gray=1.0:  r=0.5, g=0, b=0  → dark red ✓
     return (np.stack([r, g, b], axis=-1) * 255).astype(np.uint8)
 
 
-def make_gradcam_overlay(cam: np.ndarray, original_pil: Image.Image, alpha: float = 0.45) -> Image.Image:
-    """Blend JET heatmap with original → RGB PIL Image (replaces cv2.addWeighted)."""
+def make_gradcam_overlay(cam: np.ndarray, original_pil: Image.Image, alpha: float = 0.5) -> Image.Image:
     orig  = np.array(original_pil.resize((IMG_SIZE, IMG_SIZE)).convert("RGB"), dtype=np.float32)
     heat  = _jet_colormap(cam).astype(np.float32)
-    blend = ((1 - alpha) * orig + alpha * heat).clip(0, 255).astype(np.uint8)
+    blend = ((1.0 - alpha) * orig + alpha * heat).clip(0, 255).astype(np.uint8)
     return Image.fromarray(blend)
 
 
@@ -313,9 +348,11 @@ def predict_ordinal(model, pil_img):
 def run_yolo(yolo_loader, src_image: Image.Image, conf: float = 0.25) -> list:
     if yolo_loader[0] != "ultralytics":
         return []
-    # Pure Pillow resize — no cv2
-    img_np  = np.array(src_image.resize((640, 640)).convert("RGB"))
-    results = yolo_loader[1].predict(source=img_np, conf=conf, verbose=False)
+    # Ultralytics expects BGR when given a numpy array (same as cv2 output).
+    # Convert RGB PIL → numpy → flip channels to BGR to match original behaviour.
+    img_rgb = np.array(src_image.resize((640, 640)).convert("RGB"))
+    img_bgr = img_rgb[:, :, ::-1].copy()   # RGB→BGR, contiguous copy
+    results = yolo_loader[1].predict(source=img_bgr, conf=conf, verbose=False)
     return [
         {"xyxy": np.array(b[:4]), "conf": b[4]}
         for b in results[0].boxes.data.tolist()
@@ -323,21 +360,13 @@ def run_yolo(yolo_loader, src_image: Image.Image, conf: float = 0.25) -> list:
 
 
 # ============================================================================
-# IMPROVED YOLO BOUNDING BOX OVERLAY — pure Pillow, no cv2
+# YOLO BOUNDING BOX OVERLAY — pure Pillow, no cv2
 # ============================================================================
 
 def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
-    """
-    Clinical-style polyp detection overlay:
-      • Thick neon-green bounding box
-      • White L-shaped corner brackets
-      • Semi-transparent label pill with confidence bar
-    100 % Pillow — zero cv2.
-    """
     img  = image.convert("RGBA")
     w, h = img.size
 
-    # Separate layer for alpha compositing
     ovl   = Image.new("RGBA", img.size, (0, 0, 0, 0))
     drw_o = ImageDraw.Draw(ovl)
     drw   = ImageDraw.Draw(img)
@@ -347,24 +376,17 @@ def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
     font_size = max(15, min(w, h) // 28)
 
     font = ImageFont.load_default()
-    for path in (
+    for fpath in (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     ):
         try:
-            font = ImageFont.truetype(path, font_size)
+            font = ImageFont.truetype(fpath, font_size)
             break
         except OSError:
             pass
 
     sx, sy = w / 640, h / 640
-
-    BOX_COL    = (0, 230, 100)
-    BRACKET    = (255, 255, 255)
-    PILL_BG    = (0, 180, 80, 210)
-    PILL_FG    = (255, 255, 255)
-    BAR_BG     = (0, 100, 40, 200)
-    BAR_FG     = (160, 255, 160, 230)
 
     for idx, box in enumerate(boxes):
         x1 = max(0,     int(box["xyxy"][0] * sx))
@@ -380,22 +402,22 @@ def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
 
         # Box border
         for i in range(lw):
-            drw.rectangle([x1+i, y1+i, x2-i, y2-i], outline=BOX_COL, width=1)
+            drw.rectangle([x1+i, y1+i, x2-i, y2-i], outline=(0, 230, 100), width=1)
 
-        # Corner brackets
+        # Corner L-brackets
         cs = min(corner_sz, (x2-x1)//3, (y2-y1)//3)
         ct = max(2, lw + 1)
         for rx1, ry1, rx2, ry2 in [
-            (x1,    y1,    x1+cs, y1+ct),  # TL-H
-            (x1,    y1,    x1+ct, y1+cs),  # TL-V
-            (x2-cs, y1,    x2,    y1+ct),  # TR-H
-            (x2-ct, y1,    x2,    y1+cs),  # TR-V
-            (x1,    y2-ct, x1+cs, y2   ),  # BL-H
-            (x1,    y2-cs, x1+ct, y2   ),  # BL-V
-            (x2-cs, y2-ct, x2,    y2   ),  # BR-H
-            (x2-ct, y2-cs, x2,    y2   ),  # BR-V
+            (x1,    y1,    x1+cs, y1+ct),
+            (x1,    y1,    x1+ct, y1+cs),
+            (x2-cs, y1,    x2,    y1+ct),
+            (x2-ct, y1,    x2,    y1+cs),
+            (x1,    y2-ct, x1+cs, y2   ),
+            (x1,    y2-cs, x1+ct, y2   ),
+            (x2-cs, y2-ct, x2,    y2   ),
+            (x2-ct, y2-cs, x2,    y2   ),
         ]:
-            drw.rectangle([rx1, ry1, rx2, ry2], fill=BRACKET)
+            drw.rectangle([rx1, ry1, rx2, ry2], fill=(255, 255, 255))
 
         # Label pill
         label  = f"  Polyp {idx+1}   {cv*100:.0f}%  "
@@ -414,17 +436,17 @@ def overlay_boxes_high_quality(image: Image.Image, boxes: list) -> Image.Image:
             px, py = x1 + 5, y1 + 5
         px = min(max(px, 0), w - pill_w - 2)
 
-        drw_o.rectangle([px, py, px+pill_w, py+pill_h], fill=PILL_BG)
-        drw.text((px+px_p, py+py_p), label, fill=PILL_FG, font=font)
+        drw_o.rectangle([px, py, px+pill_w, py+pill_h], fill=(0, 180, 80, 210))
+        drw.text((px+px_p, py+py_p), label, fill=(255, 255, 255), font=font)
 
         # Confidence bar
         bar_y  = py + py_p + th + 4
         bx1    = px + px_p
         bx2    = px + pill_w - px_p
         bx_end = bx1 + int((bx2 - bx1) * cv)
-        drw_o.rectangle([bx1, bar_y, bx2,    bar_y+bar_h], fill=BAR_BG)
+        drw_o.rectangle([bx1, bar_y, bx2,    bar_y+bar_h], fill=(0, 100, 40, 200))
         if bx_end > bx1:
-            drw_o.rectangle([bx1, bar_y, bx_end, bar_y+bar_h], fill=BAR_FG)
+            drw_o.rectangle([bx1, bar_y, bx_end, bar_y+bar_h], fill=(160, 255, 160, 230))
 
     return Image.alpha_composite(img, ovl).convert("RGB")
 
@@ -440,7 +462,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Sidebar ────────────────────────────────────────────────────────────────
+# Sidebar
 st.sidebar.header("⚙️ Configuration")
 
 conf_threshold = st.sidebar.slider(
@@ -466,7 +488,7 @@ st.sidebar.markdown("### 💻 System Info")
 st.sidebar.info(f"**Device:** {DEVICE.type.upper()}")
 st.sidebar.info(f"**Image Size:** {IMG_SIZE}×{IMG_SIZE}")
 
-# ── Load models ────────────────────────────────────────────────────────────
+# Load models
 classification_model = None
 ordinal_model        = None
 yolo_loader          = (None, None)
@@ -478,7 +500,7 @@ if dl_ok.get("ordinal") and os.path.exists(MODEL_PATHS["ordinal"]):
 if dl_ok.get("polyp") and os.path.exists(MODEL_PATHS["polyp"]) and HAS_ULTRALYTICS:
     yolo_loader = load_yolo_model(MODEL_PATHS["polyp"])
 
-# ── Info banner ────────────────────────────────────────────────────────────
+# Info banner
 st.markdown("""
 <div class="info-box">
     <div class="info-box-title">📋 Supported Conditions</div>
@@ -491,7 +513,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── File uploader ──────────────────────────────────────────────────────────
+# File uploader
 uploaded = st.file_uploader(
     "📤 Upload Colonoscopy Images",
     type=["jpg", "jpeg", "png"],
@@ -507,6 +529,7 @@ if not uploaded:
             Upload colonoscopy images in JPG or PNG format for automated diagnosis
         </p>
     </div>""", unsafe_allow_html=True)
+
 else:
     st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
     st.markdown("## 🔍 Analysis Results")
@@ -518,7 +541,7 @@ else:
         status_text.text(f"Processing image {idx+1} of {len(uploaded)}…")
         img = Image.open(f).convert("RGB")
 
-        # ── Classification row ─────────────────────────────────────────────
+        # ── Classification ─────────────────────────────────────────────────
         col1, col2 = st.columns([1, 1.2])
 
         with col1:
@@ -534,11 +557,10 @@ else:
                 continue
 
             pred, conf, all_probs = predict_class(classification_model, img)
-            color = CLASS_COLORS[pred]
 
             st.markdown(f"""
             <div style="text-align:center;">
-                <div class="prediction-badge" style="background-color:{color};">
+                <div class="prediction-badge" style="background-color:{CLASS_COLORS[pred]};">
                     {CLASS_ICONS[pred]} {CLASS_NAMES[pred]}
                 </div>
             </div>""", unsafe_allow_html=True)
@@ -556,23 +578,24 @@ else:
 
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # ── GradCAM++ — classifier ─────────────────────────────────────────
+        # ── GradCAM++ — classifier ──────────────────────────────────────────
         if show_gradcam and classification_model:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 🧠 GradCAM++ — Classifier Attention")
-            inp     = transform(img).unsqueeze(0).to(DEVICE)
-            campp   = GradCAMpp(classification_model, classification_model.bn)
-            cam_map = campp.generate(inp, pred)
+            inp   = transform(img).unsqueeze(0).to(DEVICE)
+            gcpp  = GradCAMpp(classification_model, classification_model.bn)
+            cam   = gcpp.generate(inp, pred)
+            gcpp.remove()   # clean up hooks
 
             gc1, gc2, gc3 = st.columns(3)
             with gc1:
                 st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original",  use_container_width=True)
             with gc2:
-                st.image(Image.fromarray(_jet_colormap(cam_map)), caption="Heatmap",   use_container_width=True)
+                st.image(Image.fromarray(_jet_colormap(cam)), caption="Heatmap", use_container_width=True)
             with gc3:
-                st.image(make_gradcam_overlay(cam_map, img),      caption="Overlay",   use_container_width=True)
+                st.image(make_gradcam_overlay(cam, img),      caption="Overlay", use_container_width=True)
 
-        # ── Polyp detection ────────────────────────────────────────────────
+        # ── Polyp detection ─────────────────────────────────────────────────
         if pred == 2 and yolo_loader[0] == "ultralytics":
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 🎯 Polyp Detection Results")
@@ -594,9 +617,11 @@ else:
                     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                     over.save(tmp.name)
                     with open(tmp.name, "rb") as fp:
-                        st.download_button("📥 Download Detection Image", fp,
-                                           file_name=f"polyp_detection_{idx+1}.png",
-                                           mime="image/png", key=f"dl_{idx}")
+                        st.download_button(
+                            "📥 Download Detection Image", fp,
+                            file_name=f"polyp_detection_{idx+1}.png",
+                            mime="image/png", key=f"dl_{idx}"
+                        )
             else:
                 st.markdown("""
                 <div class="detection-info detection-info-warning">
@@ -607,7 +632,7 @@ else:
         elif pred == 2:
             st.info("⚠️ YOLO model unavailable for polyp detection")
 
-        # ── UC severity ────────────────────────────────────────────────────
+        # ── UC severity ─────────────────────────────────────────────────────
         if pred == 1 and ordinal_model:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 📈 Ulcerative Colitis Severity Assessment")
@@ -649,17 +674,18 @@ else:
             # GradCAM++ for ordinal model
             if show_gradcam:
                 st.markdown("#### 🧠 GradCAM++ — Severity Model Attention")
-                inp_ord    = transform(img).unsqueeze(0).to(DEVICE)
-                campp_ord  = GradCAMpp(ordinal_model, ordinal_model.bn)
-                cam_ord    = campp_ord.generate(inp_ord, label)
+                inp_ord = transform(img).unsqueeze(0).to(DEVICE)
+                gcpp_ord = GradCAMpp(ordinal_model, ordinal_model.bn)
+                cam_ord  = gcpp_ord.generate(inp_ord, label)
+                gcpp_ord.remove()
 
                 og1, og2, og3 = st.columns(3)
                 with og1:
                     st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original", use_container_width=True)
                 with og2:
-                    st.image(Image.fromarray(_jet_colormap(cam_ord)), caption="Heatmap",  use_container_width=True)
+                    st.image(Image.fromarray(_jet_colormap(cam_ord)), caption="Heatmap", use_container_width=True)
                 with og3:
-                    st.image(make_gradcam_overlay(cam_ord, img),      caption="Overlay",  use_container_width=True)
+                    st.image(make_gradcam_overlay(cam_ord, img),      caption="Overlay", use_container_width=True)
 
         if idx < len(uploaded) - 1:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
@@ -670,7 +696,7 @@ else:
     progress_bar.empty()
     status_text.empty()
 
-# ── Footer ─────────────────────────────────────────────────────────────────
+# Footer
 st.markdown("""
 <div class="footer">
     <strong>Deep Learning Framework for GI Tract Disorder Diagnosis</strong><br>
