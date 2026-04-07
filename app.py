@@ -149,7 +149,7 @@ class ResEffFusionClassifier(nn.Module):
 
 
 class ResEffFusionOrdinal(nn.Module):
-    """CORAL ordinal severity — outputs K-1 logits for Mayo 0-3"""
+    """Ordinal severity classifier — 4 outputs (Mayo 0-3), softmax at inference."""
     def __init__(self, num_classes=4, eff_weight=0.75):
         super().__init__()
         self.num_classes = num_classes
@@ -166,7 +166,7 @@ class ResEffFusionOrdinal(nn.Module):
         self.bn         = nn.BatchNorm2d(1024)
         self.relu       = nn.ReLU(inplace=False)
         self.pool       = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Linear(1024, num_classes - 1)   # CORAL head
+        self.classifier = nn.Linear(1024, num_classes)   # 4 outputs — matches checkpoint
 
     def forward(self, x):
         eff = self.eff(x)[-1]
@@ -178,24 +178,6 @@ class ResEffFusionOrdinal(nn.Module):
         return self.classifier(self.pool(fused).flatten(1))
 
 
-# ============================================================================
-# CORAL UTILITY
-# ============================================================================
-
-def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
-    """CORAL K-1 logits → K class probabilities (numpy float32, shape [K])."""
-    sig = torch.sigmoid(logits)          # (1, K-1)
-    K   = logits.size(1) + 1
-
-    parts = [(1 - sig[:, 0]).unsqueeze(1)]
-    for r in range(1, K - 1):
-        parts.append((sig[:, r - 1] - sig[:, r]).unsqueeze(1))
-    parts.append(sig[:, K - 2].unsqueeze(1))
-
-    probs = torch.cat(parts, dim=1)
-    probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-12)
-    return probs.squeeze(0).detach().cpu().numpy()
-
 
 # ============================================================================
 # GRADCAM++  — pure PyTorch + Pillow, zero cv2
@@ -206,56 +188,38 @@ def coral_logits_to_probs(logits: torch.Tensor) -> np.ndarray:
 class GradCAMpp:
     """
     GradCAM++ hooked on `target_layer` (use model.bn for ResEffFusion).
-    - is_ordinal=False  →  softmax score (classifier model, doc-3 logic)
-    - is_ordinal=True   →  CORAL per-class score  (ordinal model, doc-2 logic)
+    Both the classifier and ordinal models use softmax logits.
     """
-    def __init__(self, model: nn.Module, target_layer: nn.Module, is_ordinal: bool = False):
-        self.model      = model
-        self.is_ordinal = is_ordinal
-        self._acts      = None
-        self._grads     = None
+    def __init__(self, model: nn.Module, target_layer: nn.Module):
+        self.model = model
+        self._acts = None
+        self._grads = None
         target_layer.register_forward_hook(self._fwd)
         target_layer.register_full_backward_hook(self._bwd)
 
-    def _fwd(self, _m, _i, out):    self._acts  = out
-    def _bwd(self, _m, _i, grad_o): self._grads = grad_o[0]
+    def _fwd(self, _m, _i, out):     self._acts  = out
+    def _bwd(self, _m, _i, grad_o):  self._grads = grad_o[0]
 
     @torch.enable_grad()
     def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
         self.model.zero_grad()
         logits = self.model(input_tensor)
-
-        if self.is_ordinal:
-            # doc-2 approach: backprop through the CORAL class probability
-            sig = torch.sigmoid(logits)          # (1, K-1)
-            K   = logits.size(1) + 1
-            if target_class == 0:
-                score = 1 - sig[:, 0]
-            elif target_class == K - 1:
-                score = sig[:, K - 2]
-            else:
-                score = sig[:, target_class - 1] - sig[:, target_class]
-        else:
-            # doc-3 approach: backprop through softmax class probability
-            score = torch.softmax(logits, dim=1)[:, target_class]
-
+        score  = torch.softmax(logits, dim=1)[:, target_class]
         score.sum().backward(retain_graph=False)
 
-        acts  = self._acts    # (1, C, H, W)
-        grads = self._grads   # (1, C, H, W)
+        acts  = self._acts
+        grads = self._grads
 
-        # GradCAM++ weight computation (identical in both source scripts)
         g2      = grads ** 2
         g3      = grads ** 3
         sum_act = acts.sum(dim=(2, 3), keepdim=True)
         alpha   = g2 / (2 * g2 + sum_act * g3 + 1e-8)
-        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))   # (1, C)
+        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))
 
-        cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))  # (1,H,W)
+        cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))
         cam = cam.squeeze().detach().cpu().numpy()
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
 
-        # Upsample to IMG_SIZE with Pillow (replaces cv2.resize)
         cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
         cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
         return np.array(cam_pil, dtype=np.float32) / 255.0
@@ -342,9 +306,7 @@ def predict_class(model, pil_img):
 def predict_ordinal(model, pil_img):
     x = transform(pil_img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        probs = coral_logits_to_probs(model(x))
-    probs = np.clip(probs, 0, 1)
-    probs /= probs.sum()
+        probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
     return int(np.argmax(probs)), probs
 
 
@@ -599,7 +561,7 @@ else:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 🧠 GradCAM++ — Classifier Attention")
             inp     = transform(img).unsqueeze(0).to(DEVICE)
-            campp   = GradCAMpp(classification_model, classification_model.bn, is_ordinal=False)
+            campp   = GradCAMpp(classification_model, classification_model.bn)
             cam_map = campp.generate(inp, pred)
 
             gc1, gc2, gc3 = st.columns(3)
@@ -688,7 +650,7 @@ else:
             if show_gradcam:
                 st.markdown("#### 🧠 GradCAM++ — Severity Model Attention")
                 inp_ord    = transform(img).unsqueeze(0).to(DEVICE)
-                campp_ord  = GradCAMpp(ordinal_model, ordinal_model.bn, is_ordinal=True)
+                campp_ord  = GradCAMpp(ordinal_model, ordinal_model.bn)
                 cam_ord    = campp_ord.generate(inp_ord, label)
 
                 og1, og2, og3 = st.columns(3)
