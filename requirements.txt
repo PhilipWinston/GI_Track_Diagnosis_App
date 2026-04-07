@@ -1,6 +1,5 @@
-opencv-python-headless
+ultralytics-opencv-headless
 streamlit
-ultralytics
 torch
 torchvision
 timm
