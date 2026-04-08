@@ -184,6 +184,18 @@ class ResEffFusionOrdinal(nn.Module):
 # ============================================================================
 
 class GradCAMpp:
+    """
+    GradCAM++ for ResEffFusion models.
+
+    Key fixes vs previous versions:
+    - input_tensor must NOT be detached — detaching breaks the gradient graph
+      so no gradient reaches the hooked BN layer (all-zero grads → blue map)
+    - hooks store .detach().clone() so tensors survive graph cleanup
+    - model is set to train() so BN uses batch stats (eval BN with running
+      stats produces near-constant feature maps → flat CAM)
+    - hooks are removed after use to prevent accumulation
+    - flat CAM guard returns zeros (not NaN) to avoid blue artefact
+    """
     def __init__(self, model: nn.Module, target_layer: nn.Module):
         self.model       = model
         self._acts       = None
@@ -192,41 +204,38 @@ class GradCAMpp:
         self._bwd_handle = target_layer.register_full_backward_hook(self._bwd_hook)
 
     def _fwd_hook(self, _m, _i, out):
-        # .detach().clone() so it isn't freed when the graph is cleared
         self._acts = out.detach().clone()
 
     def _bwd_hook(self, _m, _i, grad_out):
         self._grads = grad_out[0].detach().clone()
 
     def remove(self):
-        """Always call after generate() to prevent hook accumulation."""
         self._fwd_handle.remove()
         self._bwd_handle.remove()
 
     def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
-        # BatchNorm behaves differently in eval() vs train(); hooks on BN
-        # layers need train() to capture proper intermediate activations.
         was_training = self.model.training
         self.model.train()
 
         with torch.enable_grad():
             self.model.zero_grad()
-            logits = self.model(input_tensor.detach())
+            # Do NOT detach input_tensor — gradients must flow back through
+            # the whole network to reach the hooked layer
+            inp    = input_tensor.clone().requires_grad_(True)
+            logits = self.model(inp)
             score  = torch.softmax(logits, dim=1)[:, target_class]
             score.sum().backward()
 
-        # Restore original mode
         if not was_training:
             self.model.eval()
 
         acts  = self._acts
         grads = self._grads
 
-        # Safety: hooks didn't fire
         if acts is None or grads is None:
-            return np.full((IMG_SIZE, IMG_SIZE), 0.0, dtype=np.float32)
+            return np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
 
-        # GradCAM++ weighting
+        # GradCAM++ weighting (Chattopadhyay et al. 2018)
         g2      = grads ** 2
         g3      = grads ** 3
         sum_act = acts.sum(dim=(2, 3), keepdim=True)
@@ -236,18 +245,15 @@ class GradCAMpp:
         cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))
         cam = cam.squeeze().cpu().numpy().astype(np.float32)
 
-        # Normalise — if cam is flat (all same value) return zeros, not blue
         cam_min, cam_max = cam.min(), cam.max()
         if (cam_max - cam_min) < 1e-6:
-            cam = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
-        else:
-            cam = (cam - cam_min) / (cam_max - cam_min)
-            # Upsample with Pillow (no cv2)
-            cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
-            cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
-            cam     = np.array(cam_pil, dtype=np.float32) / 255.0
+            # Flat map — return zeros so caller can decide to skip display
+            return np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
 
-        return cam
+        cam = (cam - cam_min) / (cam_max - cam_min)
+        cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
+        cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+        return np.array(cam_pil, dtype=np.float32) / 255.0
 
 
 # ============================================================================
@@ -583,7 +589,7 @@ else:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 🧠 GradCAM++ — Classifier Attention")
             inp   = transform(img).unsqueeze(0).to(DEVICE)
-            gcpp  = GradCAMpp(classification_model, classification_model.bn)
+            gcpp  = GradCAMpp(classification_model, classification_model.relu)
             cam   = gcpp.generate(inp, pred)
             gcpp.remove()   # clean up hooks
 
@@ -672,20 +678,24 @@ else:
                 st.markdown('</div>', unsafe_allow_html=True)
 
             # GradCAM++ for ordinal model
+            # Hook relu (post-BN) for richer spatial gradients
             if show_gradcam:
                 st.markdown("#### 🧠 GradCAM++ — Severity Model Attention")
-                inp_ord = transform(img).unsqueeze(0).to(DEVICE)
-                gcpp_ord = GradCAMpp(ordinal_model, ordinal_model.bn)
+                inp_ord  = transform(img).unsqueeze(0).to(DEVICE)
+                gcpp_ord = GradCAMpp(ordinal_model, ordinal_model.relu)
                 cam_ord  = gcpp_ord.generate(inp_ord, label)
                 gcpp_ord.remove()
 
-                og1, og2, og3 = st.columns(3)
-                with og1:
-                    st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original", use_container_width=True)
-                with og2:
-                    st.image(Image.fromarray(_jet_colormap(cam_ord)), caption="Heatmap", use_container_width=True)
-                with og3:
-                    st.image(make_gradcam_overlay(cam_ord, img),      caption="Overlay", use_container_width=True)
+                if cam_ord.max() > 0.01:
+                    og1, og2, og3 = st.columns(3)
+                    with og1:
+                        st.image(img.resize((IMG_SIZE, IMG_SIZE)), caption="Original",  use_container_width=True)
+                    with og2:
+                        st.image(Image.fromarray(_jet_colormap(cam_ord)), caption="Heatmap",  use_container_width=True)
+                    with og3:
+                        st.image(make_gradcam_overlay(cam_ord, img),      caption="Overlay",  use_container_width=True)
+                else:
+                    st.info("ℹ️ GradCAM could not produce a meaningful heatmap for this image.")
 
         if idx < len(uploaded) - 1:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
