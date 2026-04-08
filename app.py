@@ -206,15 +206,16 @@ class GradCAMpp:
         self._bwd_handle.remove()
 
     def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
-        # Keep model in eval() — DO NOT call model.train() on a cached model.
-        # Switching to train() permanently corrupts BN running stats which
-        # breaks all future inference calls on the same cached model object.
         self.model.zero_grad()
 
         with torch.enable_grad():
-            logits = self.model(input_tensor)
-            score  = torch.softmax(logits, dim=1)[:, target_class]
-            score.sum().backward()
+            # Use raw logit score (not softmax) — matches doc-2/doc-3 exactly:
+            # score = output[:, target_class] then score.backward()
+            # Softmax flattens gradients across classes; raw logits give
+            # sharper, more localised GradCAM activations
+            output = self.model(input_tensor)
+            score  = output[:, target_class]
+            score.backward()
 
         acts  = self._acts
         grads = self._grads
@@ -222,25 +223,22 @@ class GradCAMpp:
         if acts is None or grads is None:
             return np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
 
-        # Detach now that backward is done
         acts  = acts.detach()
         grads = grads.detach()
 
-        # GradCAM++ weighting — identical to doc-2 and doc-3 scripts
-        g2      = grads ** 2
-        g3      = grads ** 3
-        sum_act = acts.sum(dim=(2, 3), keepdim=True)
-        alpha   = g2 / (2.0 * g2 + sum_act * g3 + 1e-8)
-        weights = (alpha * torch.relu(grads)).sum(dim=(2, 3))
+        # GradCAM++ weighting — matches doc-2 and doc-3 exactly
+        grads_power_2 = grads ** 2
+        grads_power_3 = grads ** 3
+        sum_activations = torch.sum(acts, dim=(2, 3), keepdim=True)
+        alpha   = grads_power_2 / (2 * grads_power_2 + sum_activations * grads_power_3 + 1e-8)
+        weights = torch.sum(alpha * torch.relu(grads), dim=(2, 3))
 
-        cam = torch.relu((weights[:, :, None, None] * acts).sum(dim=1))
+        cam = torch.sum(weights.unsqueeze(-1).unsqueeze(-1) * acts, dim=1)
+        cam = torch.relu(cam)
+
         cam = cam.squeeze().cpu().numpy().astype(np.float32)
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
 
-        cam_min, cam_max = cam.min(), cam.max()
-        if (cam_max - cam_min) < 1e-6:
-            return np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
-
-        cam = (cam - cam_min) / (cam_max - cam_min)
         cam_pil = Image.fromarray((cam * 255).astype(np.uint8), mode="L")
         cam_pil = cam_pil.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
         return np.array(cam_pil, dtype=np.float32) / 255.0
@@ -578,7 +576,7 @@ else:
         if show_gradcam and classification_model:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
             st.markdown("### 🧠 GradCAM++ — Classifier Attention")
-            inp   = transform(img).unsqueeze(0).to(DEVICE).requires_grad_(True)
+            inp   = transform(img).unsqueeze(0).to(DEVICE)
             gcpp  = GradCAMpp(classification_model, classification_model.bn)
             cam   = gcpp.generate(inp, pred)
             gcpp.remove()   # clean up hooks
@@ -671,7 +669,7 @@ else:
             # Hook relu (post-BN) for richer spatial gradients
             if show_gradcam:
                 st.markdown("#### 🧠 GradCAM++ — Severity Model Attention")
-                inp_ord  = transform(img).unsqueeze(0).to(DEVICE).requires_grad_(True)
+                inp_ord  = transform(img).unsqueeze(0).to(DEVICE)
                 gcpp_ord = GradCAMpp(ordinal_model, ordinal_model.bn)
                 cam_ord  = gcpp_ord.generate(inp_ord, label)
                 gcpp_ord.remove()
